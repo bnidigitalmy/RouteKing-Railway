@@ -1,0 +1,7 @@
+{
+  "name": "RouteKing: Courier Edition",
+  "description": "Smart route optimization and OCR scanning for courier drivers.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
