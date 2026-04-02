@@ -1,10 +1,10 @@
 import React, { useRef, useState } from 'react';
-import { Camera, Upload, Loader2, X, Banknote, MapPin, Hash, CheckCircle, User } from 'lucide-react';
+import { Camera, Upload, Loader2, X, Banknote, MapPin, Hash, CheckCircle, User, Folder } from 'lucide-react';
 import { extractParcelInfo } from '../lib/gemini';
 import { cn } from '../lib/utils';
 
 interface ScannerProps {
-  onScan: (data: { recipientName?: string; address: string; trackingNumber: string; isCOD: boolean; codAmount?: number }) => void;
+  onScan: (data: { recipientName?: string; address: string; trackingNumber: string; isCOD: boolean; codAmount?: number; groupTag?: string }) => void;
   onClose: () => void;
 }
 
@@ -18,6 +18,7 @@ export function Scanner({ onScan, onClose }: ScannerProps) {
   const [editName, setEditName] = useState('');
   const [editAddress, setEditAddress] = useState('');
   const [editTracking, setEditTracking] = useState('');
+  const [editGroup, setEditGroup] = useState('');
   const [isCOD, setIsCOD] = useState(false);
   const [codAmount, setCodAmount] = useState('');
 
@@ -38,6 +39,7 @@ export function Scanner({ onScan, onClose }: ScannerProps) {
           setEditName(result.recipientName || '');
           setEditAddress(result.address);
           setEditTracking(result.trackingNumber);
+          setEditGroup('');
           setIsCOD(false);
           setCodAmount('');
         } catch (err: any) {
@@ -70,7 +72,8 @@ export function Scanner({ onScan, onClose }: ScannerProps) {
       address: editAddress,
       trackingNumber: editTracking,
       isCOD,
-      codAmount: isCOD ? parseFloat(codAmount) : undefined
+      codAmount: isCOD ? parseFloat(codAmount) : undefined,
+      groupTag: editGroup.trim() || undefined
     });
   };
 
@@ -126,6 +129,19 @@ export function Scanner({ onScan, onClose }: ScannerProps) {
                   onChange={(e) => setEditAddress(e.target.value)}
                   rows={3}
                   className="w-full border-2 border-gray-200 rounded-xl p-3 text-sm text-gray-800 focus:border-blue-500 focus:ring-0 outline-none resize-none"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-gray-500 uppercase flex items-center gap-1">
+                  <Folder size={14} /> Tag Kawasan / Kumpulan (Pilihan)
+                </label>
+                <input 
+                  type="text" 
+                  value={editGroup}
+                  onChange={(e) => setEditGroup(e.target.value)}
+                  placeholder="Contoh: Taman Melati, Beg A"
+                  className="w-full border-2 border-gray-200 rounded-xl p-3 font-bold text-gray-800 focus:border-blue-500 focus:ring-0 outline-none"
                 />
               </div>
 

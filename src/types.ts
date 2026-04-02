@@ -10,6 +10,8 @@ export interface Parcel {
   scannedAt: number;
   isCOD?: boolean;
   codAmount?: number;
+  groupTag?: string;
+  folder?: string;
 }
 
 export interface OptimizationResult {
