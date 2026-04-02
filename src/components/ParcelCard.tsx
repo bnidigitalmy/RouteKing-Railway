@@ -1,19 +1,40 @@
 import React from 'react';
-import { MapPin, Navigation, CheckCircle2, Circle, ExternalLink, Banknote, User, Folder, MoreVertical } from 'lucide-react';
-import { Parcel } from '../types';
+import { MapPin, Navigation, CheckCircle2, Circle, ExternalLink, Banknote, User as UserIcon, Folder, MoreVertical, Phone, MessageSquare } from 'lucide-react';
+import { Parcel, UserProfile } from '../types';
 import { cn } from '../lib/utils';
 
 interface ParcelCardProps {
   key?: string;
   parcel: Parcel;
+  profile?: UserProfile | null;
   onStatusChange: (id: string, status: Parcel['status']) => void;
   onMoveClick?: () => void;
 }
 
-export function ParcelCard({ parcel, onStatusChange, onMoveClick }: ParcelCardProps) {
+export function ParcelCard({ parcel, profile, onStatusChange, onMoveClick }: ParcelCardProps) {
   const openNavigation = (e: React.MouseEvent) => {
     e.stopPropagation();
     const url = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(parcel.address)}`;
+    window.open(url, '_blank');
+  };
+
+  const sendWhatsApp = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!parcel.recipientPhone) return;
+    
+    // Clean phone number (remove non-digits)
+    let phone = parcel.recipientPhone.replace(/\D/g, '');
+    
+    // Ensure it starts with 60 (Malaysia)
+    if (phone.startsWith('0')) {
+      phone = '6' + phone;
+    } else if (!phone.startsWith('60')) {
+      phone = '60' + phone;
+    }
+
+    const riderInfo = profile?.riderName ? `${profile.riderName} (${profile.courierCompany || 'SPX'})` : 'rider Shopee Express (SPX)';
+    const message = encodeURIComponent(`Hai, saya ${riderInfo}. Parcel anda (${parcel.trackingNumber}) akan sampai dalam 10 minit! Sila sedia ya. Terima kasih.`);
+    const url = `https://wa.me/${phone}?text=${message}`;
     window.open(url, '_blank');
   };
 
@@ -63,10 +84,20 @@ export function ParcelCard({ parcel, onStatusChange, onMoveClick }: ParcelCardPr
           </div>
           
           {parcel.recipientName && parcel.recipientName !== 'Tiada Nama' && (
-            <p className="text-sm font-bold text-gray-900 mt-2 flex items-center gap-1.5">
-              <User size={14} className="text-gray-400" />
-              {parcel.recipientName}
-            </p>
+            <div className="flex items-center justify-between mt-2">
+              <p className="text-sm font-bold text-gray-900 flex items-center gap-1.5">
+                <UserIcon size={14} className="text-gray-400" />
+                {parcel.recipientName}
+              </p>
+              {parcel.recipientPhone && (
+                <button 
+                  onClick={sendWhatsApp}
+                  className="flex items-center gap-1 text-[10px] font-bold text-green-600 bg-green-50 hover:bg-green-100 px-2 py-1 rounded-full transition-colors"
+                >
+                  <MessageSquare size={12} /> WhatsApp
+                </button>
+              )}
+            </div>
           )}
           
           <h4 className="font-medium text-gray-600 text-sm mt-1 line-clamp-2 leading-tight">

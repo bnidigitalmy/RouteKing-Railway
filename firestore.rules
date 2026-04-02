@@ -1,0 +1,131 @@
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: parcels
+// Fields:
+//   - id: string (required)
+//   - recipientName: string (optional)
+//   - address: string (required)
+//   - trackingNumber: string (required)
+//   - status: string (required, ['pending', 'delivered'])
+//   - sequenceNumber: number (required)
+//   - lat: number (optional)
+//   - lng: number (optional)
+//   - scannedAt: number (required)
+//   - isCOD: boolean (optional)
+//   - codAmount: number (optional)
+//   - groupTag: string (optional)
+//   - folder: string (optional)
+//   - uid: string (required, must match owner)
+//
+// Collection: folders
+// Fields:
+//   - name: string (required)
+//   - uid: string (required, must match owner)
+//   - createdAt: number (required)
+//
+// Collection: profiles
+// Fields:
+//   - uid: string (required, must match owner)
+//   - riderName: string (required)
+//   - courierCompany: string (required)
+//
+// Collection: geocache
+// Fields:
+//   - address: string (required)
+//   - lat: number (required)
+//   - lng: number (required)
+//   - lastUpdated: number (required)
+//
+// ===============================================================
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.uid;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && 
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+         (request.auth.token.email == "bnidigital.my@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isValidParcel(data) {
+      return data.keys().hasAll(['id', 'address', 'trackingNumber', 'status', 'uid']) &&
+             data.address is string && data.address.size() < 1000 &&
+             data.trackingNumber is string && data.trackingNumber.size() < 100 &&
+             data.status in ['pending', 'delivered'] &&
+             data.uid == request.auth.uid;
+    }
+
+    function isValidFolder(data) {
+      return data.keys().hasAll(['name', 'uid']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.uid == request.auth.uid;
+    }
+
+    function isValidProfile(data) {
+      return data.keys().hasAll(['uid', 'riderName', 'courierCompany']) &&
+             data.uid == request.auth.uid &&
+             data.riderName is string && data.riderName.size() < 100 &&
+             data.courierCompany is string && data.courierCompany.size() < 100;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /parcels/{parcelId} {
+      allow read: if isDocOwner() || isAdmin();
+      allow create: if isAuthenticated() && isValidParcel(request.resource.data);
+      allow update: if isDocOwner() && isValidParcel(request.resource.data);
+      allow delete: if isDocOwner() || isAdmin();
+    }
+
+    match /folders/{folderId} {
+      allow read: if isDocOwner() || isAdmin();
+      allow create: if isAuthenticated() && isValidFolder(request.resource.data);
+      allow update: if isDocOwner() && isValidFolder(request.resource.data);
+      allow delete: if isDocOwner() || isAdmin();
+    }
+
+    match /profiles/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create, update: if isOwner(userId) && isValidProfile(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /geocache/{addressHash} {
+      // Geocache is shared to save costs for everyone
+      allow read: if isAuthenticated();
+      allow create, update: if isAuthenticated() && 
+                    request.resource.data.keys().hasAll(['address', 'lat', 'lng']) &&
+                    request.resource.data.address is string &&
+                    request.resource.data.lat is number &&
+                    request.resource.data.lng is number;
+      // No deletes for normal users
+      allow delete: if isAdmin();
+    }
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow write: if isAdmin();
+    }
+  }
+}

@@ -1,4 +1,10 @@
 import { GoogleGenAI, Type } from "@google/genai";
+import { db, doc, getDoc, setDoc, handleFirestoreError, OperationType } from "../firebase";
+
+// Helper to create a safe document ID from an address
+function hashAddress(address: string): string {
+  return address.toLowerCase().replace(/[^a-z0-9]/g, '_').substring(0, 100);
+}
 
 export async function extractParcelInfo(base64Image: string) {
   // Use custom global injected by Vite or process.env
@@ -29,18 +35,19 @@ export async function extractParcelInfo(base64Image: string) {
 
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-3.1-flash-lite-preview",
       contents: [
         {
           parts: [
             {
-              text: `You are a courier assistant in Malaysia. Extract the recipient's name, delivery address and tracking number from this shipping label (AWB). 
+              text: `You are a courier assistant in Malaysia. Extract the recipient's name, phone number, delivery address and tracking number from this shipping label (AWB). 
               Rules:
               1. The name should be the RECIPIENT'S name (Penerima).
-              2. The address should be the RECIPIENT'S address.
-              3. Include the full address including Postcode, City, and State.
-              4. The tracking number is usually a long alphanumeric string (e.g., JNT123, SPX123, MY123).
-              5. Return ONLY a JSON object.`,
+              2. The phone number should be the RECIPIENT'S phone number (usually starts with 01 or 601).
+              3. The address should be the RECIPIENT'S address.
+              4. Include the full address including Postcode, City, and State.
+              5. The tracking number is usually a long alphanumeric string (e.g., JNT123, SPX123, MY123).
+              6. Return ONLY a JSON object.`,
             },
             {
               inlineData: {
@@ -59,6 +66,10 @@ export async function extractParcelInfo(base64Image: string) {
             recipientName: {
               type: Type.STRING,
               description: "Recipient's full name"
+            },
+            recipientPhone: {
+              type: Type.STRING,
+              description: "Recipient's phone number"
             },
             address: { 
               type: Type.STRING,
@@ -79,14 +90,37 @@ export async function extractParcelInfo(base64Image: string) {
     }
 
     return JSON.parse(response.text);
-  } catch (error) {
+  } catch (error: any) {
     console.error("Gemini OCR Error:", error);
+    
+    // Handle Quota Exceeded (429) specifically
+    if (error?.message?.includes("429") || error?.message?.includes("RESOURCE_EXHAUSTED") || error?.message?.includes("quota")) {
+      throw new Error("Had penggunaan (Quota) Gemini anda telah tamat atau terlalu laju. Sila tunggu sebentar atau semak baki kredit di Google AI Studio.");
+    }
+    
     throw error;
   }
 }
 
-// Real geocoding using Google Maps Geocoding API
+// Real geocoding using Google Maps Geocoding API with Firestore Caching
 export async function getCoordinates(address: string) {
+  const addressHash = hashAddress(address);
+  
+  // 1. Check Firestore Cache first
+  try {
+    const cacheDoc = await getDoc(doc(db, 'geocache', addressHash));
+    if (cacheDoc.exists()) {
+      console.log("Using cached coordinates for:", address);
+      const data = cacheDoc.data();
+      return { lat: data.lat, lng: data.lng };
+    }
+  } catch (e) {
+    console.warn("Geocache read failed:", e);
+    // Don't throw here, just continue to geocode
+  }
+
+  let result: { lat: number, lng: number } | null = null;
+
   // Use custom global injected by Vite
   // @ts-ignore
   let googleMapsKey = typeof __GOOGLE_MAPS_API_KEY__ !== 'undefined' ? __GOOGLE_MAPS_API_KEY__ : '';
@@ -103,7 +137,7 @@ export async function getCoordinates(address: string) {
       const data = await response.json();
 
       if (data.status === 'OK' && data.results.length > 0) {
-        return {
+        result = {
           lat: data.results[0].geometry.location.lat,
           lng: data.results[0].geometry.location.lng,
         };
@@ -118,38 +152,60 @@ export async function getCoordinates(address: string) {
   }
 
   // Fallback to OpenStreetMap if Google Maps fails or key is missing
-  try {
-    let cleanAddress = address
-      .replace(/No\./gi, '')
-      .replace(/Jalan/gi, 'Jln')
-      .trim();
+  if (!result) {
+    try {
+      let cleanAddress = address
+        .replace(/No\./gi, '')
+        .replace(/Jalan/gi, 'Jln')
+        .trim();
 
-    const query = encodeURIComponent(cleanAddress);
-    
-    const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${query}&countrycodes=my&limit=1`, {
-      headers: {
-        'Accept-Language': 'ms,en-US;q=0.7,en;q=0.3'
+      const query = encodeURIComponent(cleanAddress);
+      
+      const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${query}&countrycodes=my&limit=1`, {
+        headers: {
+          'Accept-Language': 'ms,en-US;q=0.7,en;q=0.3'
+        }
+      });
+      
+      const data = await response.json();
+
+      if (data && data.length > 0) {
+        result = {
+          lat: parseFloat(data[0].lat),
+          lng: parseFloat(data[0].lon),
+        };
       }
-    });
-    
-    const data = await response.json();
-
-    if (data && data.length > 0) {
-      return {
-        lat: parseFloat(data[0].lat),
-        lng: parseFloat(data[0].lon),
-      };
+    } catch (error) {
+      console.error("OSM Geocoding error:", error);
     }
-  } catch (error) {
-    console.error("OSM Geocoding error:", error);
   }
 
   // Fallback if address not found by any API
-  console.warn("Address not found by geocoder, using fallback coordinates");
-  const baseLat = 3.1390;
-  const baseLng = 101.6869;
-  return {
-    lat: baseLat + (Math.random() - 0.5) * 0.05,
-    lng: baseLng + (Math.random() - 0.5) * 0.05,
-  };
+  if (!result) {
+    console.warn("Address not found by geocoder, using fallback coordinates");
+    const baseLat = 3.1390;
+    const baseLng = 101.6869;
+    result = {
+      lat: baseLat + (Math.random() - 0.5) * 0.05,
+      lng: baseLng + (Math.random() - 0.5) * 0.05,
+    };
+  }
+
+  // 2. Save to Firestore Cache for next time
+  if (result) {
+    try {
+      await setDoc(doc(db, 'geocache', addressHash), {
+        address,
+        lat: result.lat,
+        lng: result.lng,
+        lastUpdated: Date.now()
+      });
+    } catch (e) {
+      console.warn("Geocache write failed:", e);
+      // We don't use handleFirestoreError here to avoid blocking the user
+      // but we log it for debugging
+    }
+  }
+
+  return result;
 }

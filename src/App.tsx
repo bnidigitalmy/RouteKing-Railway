@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Plus, MapPin, Navigation, Trash2, RefreshCw, Package, ArrowRight, Camera, Search, LayoutGrid, List, Map, Filter, Folder, MoreVertical } from 'lucide-react';
-import { Parcel } from './types';
+import { Plus, MapPin, Navigation, Trash2, RefreshCw, Package, ArrowRight, Camera, Search, LayoutGrid, List, Map, Filter, Folder, MoreVertical, LogOut, LogIn, AlertCircle, X, Edit2, User as UserIcon, CheckCircle2 } from 'lucide-react';
+import { Parcel, UserProfile } from './types';
 import { Scanner } from './components/Scanner';
 import { ParcelCard } from './components/ParcelCard';
 import { Stats } from './components/Stats';
@@ -10,8 +10,30 @@ import { optimizeRoute } from './lib/optimizer';
 import { getCoordinates } from './lib/gemini';
 import { cn } from './lib/utils';
 import confetti from 'canvas-confetti';
+import { 
+  auth, 
+  db, 
+  signInWithGoogle, 
+  logout, 
+  collection, 
+  doc, 
+  setDoc, 
+  getDocs,
+  updateDoc, 
+  deleteDoc, 
+  query, 
+  where, 
+  onSnapshot, 
+  onAuthStateChanged,
+  orderBy, 
+  handleFirestoreError,
+  OperationType,
+  User 
+} from './firebase';
 
 export default function App() {
+  const [user, setUser] = useState<User | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [parcels, setParcels] = useState<Parcel[]>([]);
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [isNavigationModeOpen, setIsNavigationModeOpen] = useState(false);
@@ -35,38 +57,101 @@ export default function App() {
   const [newFolderName, setNewFolderName] = useState('');
   const [folderToDelete, setFolderToDelete] = useState<string | null>(null);
   const [isClearAllModalOpen, setIsClearAllModalOpen] = useState(false);
+  const [isMarkingModeOpen, setIsMarkingModeOpen] = useState(false);
+  const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [saveSuccess, setSaveSuccess] = useState(false);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [riderName, setRiderName] = useState('');
+  const [courierCompany, setCourierCompany] = useState('Shopee Express (SPX)');
+  const [error, setError] = useState<string | null>(null);
 
   // Default start point (Hub)
-  const startPoint = { lat: 3.1390, lng: 101.6869 };
+  const [startPoint, setStartPoint] = useState({ lat: 3.1390, lng: 101.6869 });
 
-  // Load from localStorage
+  // Auth Listener
   useEffect(() => {
-    const savedParcels = localStorage.getItem('routeking_parcels');
-    if (savedParcels) {
-      try { setParcels(JSON.parse(savedParcels)); } catch (e) { console.error(e); }
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setIsAuthLoading(false);
+    });
+
+    // Get current location on mount
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => setStartPoint({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+        () => console.log("Using default hub location"),
+        { timeout: 5000 }
+      );
     }
-    
-    const savedFolders = localStorage.getItem('routeking_folders');
-    if (savedFolders) {
-      try { setFolders(JSON.parse(savedFolders)); } catch (e) { console.error(e); }
-    }
+
+    return () => unsubscribe();
   }, []);
 
-  // Save to localStorage
+  // Firestore Listeners
   useEffect(() => {
-    localStorage.setItem('routeking_parcels', JSON.stringify(parcels));
-  }, [parcels]);
+    if (!user) {
+      setParcels([]);
+      setFolders([]);
+      return;
+    }
 
-  useEffect(() => {
-    localStorage.setItem('routeking_folders', JSON.stringify(folders));
-  }, [folders]);
+    // Listen to Parcels
+    const qParcels = query(
+      collection(db, 'parcels'), 
+      where('uid', '==', user.uid),
+      orderBy('sequenceNumber', 'asc')
+    );
+    const unsubParcels = onSnapshot(qParcels, (snapshot) => {
+      const parcelData = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Parcel));
+      setParcels(parcelData);
+    }, (error) => {
+      console.error("Firestore Error (Parcels):", error);
+    });
 
-  const handleScan = async (data: { recipientName?: string; address: string; trackingNumber: string; isCOD?: boolean; codAmount?: number; groupTag?: string }) => {
+    // Listen to Folders
+    const qFolders = query(
+      collection(db, 'folders'),
+      where('uid', '==', user.uid),
+      orderBy('createdAt', 'asc')
+    );
+    const unsubFolders = onSnapshot(qFolders, (snapshot) => {
+      const folderData = snapshot.docs.map(doc => doc.data().name as string);
+      setFolders(folderData);
+    }, (error) => {
+      console.error("Firestore Error (Folders):", error);
+    });
+
+    // Listen to Profile
+    const unsubProfile = onSnapshot(doc(db, 'profiles', user.uid), (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.data() as UserProfile;
+        setProfile(data);
+        setRiderName(data.riderName);
+        setCourierCompany(data.courierCompany);
+      }
+    }, (error) => {
+      console.error("Firestore Error (Profile):", error);
+    });
+
+    return () => {
+      unsubParcels();
+      unsubFolders();
+      unsubProfile();
+    };
+  }, [user]);
+
+  const handleScan = async (data: { recipientName?: string; recipientPhone?: string; address: string; trackingNumber: string; isCOD?: boolean; codAmount?: number; groupTag?: string }) => {
+    if (!user) return;
     const coords = await getCoordinates(data.address);
     
-    const newParcel: Parcel = {
-      id: crypto.randomUUID(),
+    const parcelId = typeof crypto.randomUUID === 'function' 
+      ? crypto.randomUUID() 
+      : Date.now().toString(36) + Math.random().toString(36).substring(2);
+    const newParcel: any = {
+      id: parcelId,
       recipientName: data.recipientName || 'Tiada Nama',
+      recipientPhone: data.recipientPhone || '',
       address: data.address,
       trackingNumber: data.trackingNumber,
       status: 'pending',
@@ -74,97 +159,162 @@ export default function App() {
       lat: coords.lat,
       lng: coords.lng,
       scannedAt: Date.now(),
-      isCOD: data.isCOD,
-      codAmount: data.codAmount,
-      groupTag: data.groupTag
+      isCOD: !!data.isCOD,
+      codAmount: data.codAmount || 0,
+      groupTag: data.groupTag || '',
+      uid: user.uid
     };
 
-    setParcels(prev => [...prev, newParcel]);
-    setIsScannerOpen(false);
-    
-    // Success feedback
-    confetti({
-      particleCount: 100,
-      spread: 70,
-      origin: { y: 0.6 },
-      colors: ['#2563eb', '#10b981', '#f59e0b']
-    });
-  };
-
-  const handleStatusChange = (id: string, status: Parcel['status']) => {
-    setParcels(prev => prev.map(p => p.id === id ? { ...p, status } : p));
-    
-    if (status === 'delivered') {
-      const remaining = parcels.filter(p => p.id !== id && p.status !== 'delivered').length;
-      if (remaining === 0) {
-        confetti({
-          particleCount: 150,
-          spread: 100,
-          origin: { y: 0.6 },
-          colors: ['#10b981', '#3b82f6']
-        });
-      }
+    try {
+      await setDoc(doc(db, 'parcels', parcelId), newParcel);
+      setIsScannerOpen(false);
+      setError(null);
+      
+      // Success feedback
+      confetti({
+        particleCount: 100,
+        spread: 70,
+        origin: { y: 0.6 },
+        colors: ['#2563eb', '#10b981', '#f59e0b']
+      });
+    } catch (e: any) {
+      setError(e.message || "Gagal simpan parcel. Sila cuba lagi.");
+      handleFirestoreError(e, OperationType.WRITE, `parcels/${parcelId}`);
     }
   };
 
+  const handleStatusChange = async (id: string, status: Parcel['status']) => {
+    try {
+      await updateDoc(doc(db, 'parcels', id), { status });
+      
+      if (status === 'delivered') {
+        const remaining = parcels.filter(p => p.id !== id && p.status !== 'delivered').length;
+        if (remaining === 0) {
+          confetti({
+            particleCount: 150,
+            spread: 100,
+            origin: { y: 0.6 },
+            colors: ['#10b981', '#3b82f6']
+          });
+        }
+      }
+    } catch (e) {
+      handleFirestoreError(e, OperationType.UPDATE, `parcels/${id}`);
+    }
+  };
+
+  const getCurrentLocation = (): Promise<{ lat: number; lng: number }> => {
+    return new Promise((resolve) => {
+      if (!navigator.geolocation) {
+        resolve(startPoint);
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const loc = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+          setStartPoint(loc);
+          resolve(loc);
+        },
+        () => resolve(startPoint),
+        { timeout: 5000 }
+      );
+    });
+  };
+
   const handleOptimize = useCallback(async (targetFolder?: string) => {
+    if (!user) return;
     setIsOptimizing(true);
     
     try {
-      // Start from a mock current location (Kuala Lumpur center)
-      const startPoint = { lat: 3.1390, lng: 101.6869 };
+      const currentPos = await getCurrentLocation();
       
+      let optimizedParcels: Parcel[] = [];
+      let parcelsToUpdate: Parcel[] = [];
+
       if (typeof targetFolder === 'string') {
-        // Optimize specific folder only
         const folderPending = parcels.filter(p => p.status !== 'delivered' && (p.folder || 'Tiada Folder') === targetFolder);
-        
         if (folderPending.length > 0) {
-          const optimizedFolderPending = await optimizeRoute(folderPending, startPoint);
-          // Keep existing sequence numbers but reassign them based on new optimized order
+          const optimized = await optimizeRoute(folderPending, currentPos);
           const seqNumbers = folderPending.map(p => p.sequenceNumber).sort((a, b) => a - b);
-          
-          const newParcels = [...parcels];
-          optimizedFolderPending.forEach((p, i) => {
-            const index = newParcels.findIndex(np => np.id === p.id);
-            if (index !== -1) {
-              newParcels[index] = { ...p, sequenceNumber: seqNumbers[i] };
-            }
-          });
-          setParcels(newParcels);
+          parcelsToUpdate = optimized.map((p, i) => ({ ...p, sequenceNumber: seqNumbers[i] }));
         }
       } else {
-        // Global optimize
         const pendingParcels = parcels.filter(p => p.status !== 'delivered');
         const deliveredParcels = parcels.filter(p => p.status === 'delivered');
-        
-        const optimizedPending = await optimizeRoute(pendingParcels, startPoint);
-        
-        const finalRoute = [...optimizedPending, ...deliveredParcels].map((p, i) => ({
-          ...p,
-          sequenceNumber: i + 1
-        }));
-
-        setParcels(finalRoute);
+        const optimized = await optimizeRoute(pendingParcels, currentPos);
+        const allSorted = [...optimized, ...deliveredParcels];
+        parcelsToUpdate = allSorted.map((p, i) => ({ ...p, sequenceNumber: i + 1 }));
       }
+
+      // Update in Firestore
+      const promises = parcelsToUpdate.map(p => 
+        updateDoc(doc(db, 'parcels', p.id), { sequenceNumber: p.sequenceNumber })
+      );
+      await Promise.all(promises);
+
     } catch (error) {
       console.error("Optimization failed:", error);
     } finally {
       setIsOptimizing(false);
     }
-  }, [parcels]);
+  }, [parcels, user]);
+
+  const handleSaveProfile = async () => {
+    if (!user) return;
+    setIsSavingProfile(true);
+    try {
+      await setDoc(doc(db, 'profiles', user.uid), {
+        uid: user.uid,
+        riderName,
+        courierCompany
+      });
+      
+      // Trigger success feedback
+      setSaveSuccess(true);
+      confetti({
+        particleCount: 100,
+        spread: 70,
+        origin: { y: 0.6 }
+      });
+
+      // Close modal after a short delay to show success state
+      window.setTimeout(() => {
+        setIsProfileModalOpen(false);
+        setSaveSuccess(false);
+        setIsSavingProfile(false);
+      }, 700);
+    } catch (e) {
+      setIsSavingProfile(false);
+      handleFirestoreError(e, OperationType.WRITE, `profiles/${user.uid}`);
+    }
+  };
 
   const handleStartNavigation = (folder?: string) => {
     setNavigationFolder(folder || null);
     setIsNavigationModeOpen(true);
   };
 
+  const handleMarkingScan = (trackingNumber: string) => {
+    const found = parcels.find(p => 
+      p.trackingNumber.toLowerCase().includes(trackingNumber.toLowerCase()) ||
+      trackingNumber.toLowerCase().includes(p.trackingNumber.toLowerCase())
+    );
+    return found;
+  };
+
   const confirmClearAll = () => {
     setIsClearAllModalOpen(true);
   };
 
-  const executeClearAll = () => {
-    setParcels([]);
-    setIsClearAllModalOpen(false);
+  const executeClearAll = async () => {
+    if (!user) return;
+    try {
+      const promises = parcels.map(p => deleteDoc(doc(db, 'parcels', p.id)));
+      await Promise.all(promises);
+      setIsClearAllModalOpen(false);
+    } catch (e) {
+      handleFirestoreError(e, OperationType.DELETE, 'parcels');
+    }
   };
 
   const openCreateFolderModal = () => {
@@ -172,11 +322,21 @@ export default function App() {
     setIsCreateFolderModalOpen(true);
   };
 
-  const submitCreateFolder = () => {
+  const submitCreateFolder = async () => {
+    if (!user) return;
     if (newFolderName && newFolderName.trim() !== '') {
       const trimmedName = newFolderName.trim();
       if (!folders.includes(trimmedName)) {
-        setFolders([...folders, trimmedName]);
+        const folderId = crypto.randomUUID();
+        try {
+          await setDoc(doc(db, 'folders', folderId), {
+            name: trimmedName,
+            uid: user.uid,
+            createdAt: Date.now()
+          });
+        } catch (e) {
+          handleFirestoreError(e, OperationType.WRITE, `folders/${folderId}`);
+        }
       }
     }
     setIsCreateFolderModalOpen(false);
@@ -186,11 +346,23 @@ export default function App() {
     setFolderToDelete(folderName);
   };
 
-  const executeDeleteFolder = () => {
-    if (folderToDelete) {
-      setFolders(folders.filter(f => f !== folderToDelete));
-      setParcels(prev => prev.map(p => p.folder === folderToDelete ? { ...p, folder: undefined } : p));
+  const executeDeleteFolder = async () => {
+    if (!user || !folderToDelete) return;
+    try {
+      // 1. Find folder doc to delete
+      const q = query(collection(db, 'folders'), where('uid', '==', user.uid), where('name', '==', folderToDelete));
+      const snapshot = await getDocs(q);
+      const deletePromises = snapshot.docs.map(d => deleteDoc(d.ref));
+      
+      // 2. Update parcels in that folder
+      const updatePromises = parcels
+        .filter(p => p.folder === folderToDelete)
+        .map(p => updateDoc(doc(db, 'parcels', p.id), { folder: null }));
+
+      await Promise.all([...deletePromises, ...updatePromises]);
       setFolderToDelete(null);
+    } catch (e) {
+      console.error("Error deleting folder:", e);
     }
   };
 
@@ -234,21 +406,81 @@ export default function App() {
             </div>
           </div>
           
-          <button 
-            onClick={confirmClearAll}
-            className="p-2 text-gray-400 hover:text-red-500 transition-colors"
-          >
-            <Trash2 size={20} />
-          </button>
+          <div className="flex items-center gap-1 sm:gap-2">
+            <button 
+              onClick={confirmClearAll}
+              className="p-2 text-gray-400 hover:text-red-500 transition-colors"
+              title="Padam Semua"
+            >
+              <Trash2 size={20} />
+            </button>
+            {user && (
+              <>
+                <button 
+                  onClick={() => setIsProfileModalOpen(true)}
+                  className="p-2 text-gray-400 hover:text-blue-600 transition-colors flex items-center gap-1.5"
+                  title="Profile Rider"
+                >
+                  <UserIcon size={20} />
+                  <span className="hidden sm:inline text-[10px] font-black uppercase tracking-tighter max-w-[60px] truncate">{riderName || 'Setup'}</span>
+                </button>
+                <button 
+                  onClick={logout}
+                  className="p-2 text-gray-400 hover:text-red-600 transition-colors"
+                  title="Logout"
+                >
+                  <LogOut size={20} />
+                </button>
+              </>
+            )}
+          </div>
         </div>
       </header>
 
       <main className="max-w-md mx-auto p-4 space-y-6">
-        {/* Stats Section */}
-        <Stats parcels={parcels} />
+        {error && (
+          <div className="bg-red-50 border-2 border-red-100 text-red-600 p-4 rounded-2xl flex items-start gap-3 animate-in fade-in slide-in-from-top-2">
+            <AlertCircle className="shrink-0 mt-0.5" size={18} />
+            <div className="flex-1">
+              <p className="text-sm font-bold">Ralat Berlaku</p>
+              <p className="text-xs opacity-80">{error}</p>
+            </div>
+            <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600">
+              <X size={18} />
+            </button>
+          </div>
+        )}
 
-        {/* Search & Actions */}
-        <div className="space-y-3">
+        {isAuthLoading ? (
+          <div className="flex flex-col items-center justify-center py-20 gap-4">
+            <RefreshCw className="animate-spin text-blue-600" size={40} />
+            <p className="text-gray-500 font-medium">Memuatkan akaun...</p>
+          </div>
+        ) : !user ? (
+          <div className="flex flex-col items-center justify-center py-12 px-6 bg-white rounded-3xl shadow-xl border-2 border-gray-50 text-center gap-6 animate-in fade-in zoom-in duration-500">
+            <div className="w-24 h-24 bg-blue-100 rounded-full flex items-center justify-center text-blue-600">
+              <Package size={48} />
+            </div>
+            <div className="space-y-2">
+              <h2 className="text-2xl font-black text-gray-800">Selamat Datang!</h2>
+              <p className="text-gray-500">Sila log masuk untuk mula menyusun parcel dan simpan data anda dengan selamat.</p>
+            </div>
+            <button
+              onClick={signInWithGoogle}
+              className="w-full flex items-center justify-center gap-3 bg-white border-2 border-gray-200 hover:border-blue-500 hover:bg-blue-50 text-gray-700 font-bold py-4 px-6 rounded-2xl transition-all active:scale-95 shadow-sm"
+            >
+              <img src="https://www.google.com/favicon.ico" alt="Google" className="w-5 h-5" />
+              Log Masuk dengan Google
+            </button>
+            <p className="text-xs text-gray-400">Dengan log masuk, anda bersetuju dengan terma dan syarat kami.</p>
+          </div>
+        ) : (
+          <>
+            {/* Stats Section */}
+            <Stats parcels={parcels} />
+
+            {/* Search & Actions */}
+            <div className="space-y-3">
           <div className="flex gap-2">
             <div className="relative flex-1">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
@@ -308,6 +540,16 @@ export default function App() {
                   )}
                 >
                   COD Sahaja
+                </button>
+              </div>
+
+              <div className="pt-2 border-t border-gray-100">
+                <button
+                  onClick={() => setIsMarkingModeOpen(true)}
+                  className="w-full py-3 px-3 rounded-xl text-sm font-black transition-all flex items-center justify-center gap-2 bg-purple-600 text-white shadow-lg active:scale-95"
+                >
+                  <Edit2 size={18} />
+                  MOD MENANDA (SCAN & TULIS NO.)
                 </button>
               </div>
 
@@ -411,11 +653,17 @@ export default function App() {
                 <div 
                   key={folder}
                   onDragOver={(e) => e.preventDefault()}
-                  onDrop={(e) => {
+                  onDrop={async (e) => {
                     e.preventDefault();
                     const parcelId = e.dataTransfer.getData('text/plain');
                     if (parcelId) {
-                      setParcels(prev => prev.map(p => p.id === parcelId ? { ...p, folder: folder === 'Tiada Folder' ? undefined : folder } : p));
+                      try {
+                        await updateDoc(doc(db, 'parcels', parcelId), { 
+                          folder: folder === 'Tiada Folder' ? null : folder 
+                        });
+                      } catch (err) {
+                        console.error("Error moving parcel:", err);
+                      }
                     }
                   }}
                   className={cn(
@@ -462,6 +710,7 @@ export default function App() {
                       <ParcelCard 
                         key={parcel.id} 
                         parcel={parcel} 
+                        profile={profile}
                         onStatusChange={handleStatusChange}
                         onMoveClick={() => setMovingParcelId(parcel.id)}
                       />
@@ -486,124 +735,207 @@ export default function App() {
             )}
           </div>
         )}
-      </main>
 
-      {/* Floating Action Button */}
-      <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-40">
-        <button
-          onClick={() => setIsScannerOpen(true)}
-          className="flex items-center gap-3 bg-blue-600 hover:bg-blue-700 text-white font-black py-4 px-8 rounded-full shadow-[0_10px_40px_rgba(37,99,235,0.4)] transition-all active:scale-90 group"
-        >
-          <Camera size={24} className="group-hover:scale-110 transition-transform" />
-          <span className="text-lg">SCAN PARCEL</span>
-        </button>
-      </div>
-
-      {/* Scanner Modal */}
-      {isScannerOpen && (
-        <Scanner 
-          onScan={handleScan} 
-          onClose={() => setIsScannerOpen(false)} 
-        />
-      )}
-
-      {/* Navigation Mode Overlay */}
-      {isNavigationModeOpen && (
-        <NavigationMode 
-          parcels={navigationFolder ? parcels.filter(p => (p.folder || 'Tiada Folder') === navigationFolder) : parcels}
-          onMarkDelivered={(id) => handleStatusChange(id, 'delivered')}
-          onClose={() => setIsNavigationModeOpen(false)}
-        />
-      )}
-
-      {/* Move to Folder Modal */}
-      {movingParcelId && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-4 backdrop-blur-sm">
-          <div className="bg-white w-full max-w-sm rounded-t-2xl sm:rounded-2xl p-6 animate-in slide-in-from-bottom-full sm:slide-in-from-bottom-0 sm:zoom-in-95 shadow-2xl">
-            <h3 className="font-bold text-lg mb-4 text-gray-800">Pindah ke Folder</h3>
-            <div className="space-y-2 max-h-[60vh] overflow-y-auto">
-              <button
-                onClick={() => {
-                  setParcels(prev => prev.map(p => p.id === movingParcelId ? { ...p, folder: undefined } : p));
-                  setMovingParcelId(null);
-                }}
-                className="w-full text-left px-4 py-3 rounded-xl hover:bg-gray-100 font-medium text-gray-700 flex items-center gap-3 transition-colors"
-              >
-                <Folder size={18} className="text-gray-400" /> Tiada Folder
-              </button>
-              {folders.map(f => (
-                <button
-                  key={f}
-                  onClick={() => {
-                    setParcels(prev => prev.map(p => p.id === movingParcelId ? { ...p, folder: f } : p));
-                    setMovingParcelId(null);
-                  }}
-                  className="w-full text-left px-4 py-3 rounded-xl hover:bg-blue-50 text-blue-700 font-bold flex items-center gap-3 transition-colors"
-                >
-                  <Folder size={18} className="text-blue-500" /> {f}
-                </button>
-              ))}
-              {folders.length === 0 && (
-                <p className="text-sm text-gray-500 text-center py-4">Sila cipta folder baru terlebih dahulu.</p>
-              )}
-            </div>
-            <button 
-              onClick={() => setMovingParcelId(null)} 
-              className="mt-6 w-full py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition-colors"
+          {/* Floating Action Button */}
+          <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-40">
+            <button
+              onClick={() => setIsScannerOpen(true)}
+              className="flex items-center gap-3 bg-blue-600 hover:bg-blue-700 text-white font-black py-4 px-8 rounded-full shadow-[0_10px_40px_rgba(37,99,235,0.4)] transition-all active:scale-90 group"
             >
-              Batal
+              <Camera size={24} className="group-hover:scale-110 transition-transform" />
+              <span className="text-lg">SCAN PARCEL</span>
             </button>
           </div>
-        </div>
-      )}
 
-      {/* Custom Modals */}
-      {isCreateFolderModalOpen && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
-          <div className="bg-white w-full max-w-sm rounded-2xl p-6 animate-in zoom-in-95 shadow-2xl">
-            <h3 className="font-bold text-lg mb-4 text-gray-800">Tambah Folder Baru</h3>
-            <input
-              type="text"
-              value={newFolderName}
-              onChange={(e) => setNewFolderName(e.target.value)}
-              placeholder="Cth: Taman Melati, Guni A"
-              className="w-full border-2 border-gray-200 rounded-xl p-3 font-bold text-gray-800 focus:border-blue-500 focus:ring-0 outline-none mb-6"
-              autoFocus
-              onKeyDown={(e) => e.key === 'Enter' && submitCreateFolder()}
+          {/* Scanner Modal */}
+          {isScannerOpen && (
+            <Scanner 
+              onScan={handleScan} 
+              onClose={() => setIsScannerOpen(false)} 
             />
-            <div className="flex gap-3">
-              <button onClick={() => setIsCreateFolderModalOpen(false)} className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition-colors">Batal</button>
-              <button onClick={submitCreateFolder} className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl transition-colors">Simpan</button>
-            </div>
-          </div>
-        </div>
-      )}
+          )}
 
-      {folderToDelete && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
-          <div className="bg-white w-full max-w-sm rounded-2xl p-6 animate-in zoom-in-95 shadow-2xl">
-            <h3 className="font-bold text-lg mb-2 text-gray-800">Padam Folder?</h3>
-            <p className="text-gray-600 text-sm mb-6">Adakah anda pasti mahu memadam folder "{folderToDelete}"? Parcel di dalam akan dikembalikan ke "Tiada Folder".</p>
-            <div className="flex gap-3">
-              <button onClick={() => setFolderToDelete(null)} className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition-colors">Batal</button>
-              <button onClick={executeDeleteFolder} className="flex-1 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl transition-colors">Padam</button>
-            </div>
-          </div>
-        </div>
-      )}
+          {/* Marking Mode Modal */}
+          {isMarkingModeOpen && (
+            <Scanner 
+              mode="mark"
+              onMarkScan={handleMarkingScan}
+              onClose={() => setIsMarkingModeOpen(false)} 
+            />
+          )}
 
-      {isClearAllModalOpen && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
-          <div className="bg-white w-full max-w-sm rounded-2xl p-6 animate-in zoom-in-95 shadow-2xl">
-            <h3 className="font-bold text-lg mb-2 text-gray-800">Padam Semua Data?</h3>
-            <p className="text-gray-600 text-sm mb-6">Adakah anda pasti mahu memadam semua data parcel? Tindakan ini tidak boleh diundur.</p>
-            <div className="flex gap-3">
-              <button onClick={() => setIsClearAllModalOpen(false)} className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition-colors">Batal</button>
-              <button onClick={executeClearAll} className="flex-1 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl transition-colors">Padam Semua</button>
+          {/* Navigation Mode Overlay */}
+          {isNavigationModeOpen && (
+            <NavigationMode 
+              parcels={navigationFolder ? parcels.filter(p => (p.folder || 'Tiada Folder') === navigationFolder) : parcels}
+              profile={profile}
+              onMarkDelivered={(id) => handleStatusChange(id, 'delivered')}
+              onClose={() => setIsNavigationModeOpen(false)}
+            />
+          )}
+
+          {/* Move to Folder Modal */}
+          {movingParcelId && (
+            <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-4 backdrop-blur-sm">
+              <div className="bg-white w-full max-w-sm rounded-t-2xl sm:rounded-2xl p-6 animate-in slide-in-from-bottom-full sm:slide-in-from-bottom-0 sm:zoom-in-95 shadow-2xl">
+                <h3 className="font-bold text-lg mb-4 text-gray-800">Pindah ke Folder</h3>
+                <div className="space-y-2 max-h-[60vh] overflow-y-auto">
+                  <button
+                    onClick={async () => {
+                      try {
+                        await updateDoc(doc(db, 'parcels', movingParcelId), { folder: null });
+                        setMovingParcelId(null);
+                      } catch (e) { handleFirestoreError(e, OperationType.UPDATE, `parcels/${movingParcelId}`); }
+                    }}
+                    className="w-full text-left px-4 py-3 rounded-xl hover:bg-gray-100 font-medium text-gray-700 flex items-center gap-3 transition-colors"
+                  >
+                    <Folder size={18} className="text-gray-400" /> Tiada Folder
+                  </button>
+                  {folders.map(f => (
+                    <button
+                      key={f}
+                      onClick={async () => {
+                        try {
+                          await updateDoc(doc(db, 'parcels', movingParcelId), { folder: f });
+                          setMovingParcelId(null);
+                        } catch (e) { handleFirestoreError(e, OperationType.UPDATE, `parcels/${movingParcelId}`); }
+                      }}
+                      className="w-full text-left px-4 py-3 rounded-xl hover:bg-blue-50 text-blue-700 font-bold flex items-center gap-3 transition-colors"
+                    >
+                      <Folder size={18} className="text-blue-500" /> {f}
+                    </button>
+                  ))}
+                  {folders.length === 0 && (
+                    <p className="text-sm text-gray-500 text-center py-4">Sila cipta folder baru terlebih dahulu.</p>
+                  )}
+                </div>
+                <button 
+                  onClick={() => setMovingParcelId(null)} 
+                  className="mt-6 w-full py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition-colors"
+                >
+                  Batal
+                </button>
+              </div>
             </div>
-          </div>
-        </div>
+          )}
+
+          {/* Custom Modals */}
+          {isCreateFolderModalOpen && (
+            <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+              <div className="bg-white w-full max-w-sm rounded-2xl p-6 animate-in zoom-in-95 shadow-2xl">
+                <h3 className="font-bold text-lg mb-4 text-gray-800">Tambah Folder Baru</h3>
+                <input
+                  type="text"
+                  value={newFolderName}
+                  onChange={(e) => setNewFolderName(e.target.value)}
+                  placeholder="Cth: Taman Melati, Guni A"
+                  className="w-full border-2 border-gray-200 rounded-xl p-3 font-bold text-gray-800 focus:border-blue-500 focus:ring-0 outline-none mb-6"
+                  autoFocus
+                  onKeyDown={(e) => e.key === 'Enter' && submitCreateFolder()}
+                />
+                <div className="flex gap-3">
+                  <button onClick={() => setIsCreateFolderModalOpen(false)} className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition-colors">Batal</button>
+                  <button onClick={submitCreateFolder} className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl transition-colors">Simpan</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {folderToDelete && (
+            <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+              <div className="bg-white w-full max-w-sm rounded-2xl p-6 animate-in zoom-in-95 shadow-2xl">
+                <h3 className="font-bold text-lg mb-2 text-gray-800">Padam Folder?</h3>
+                <p className="text-gray-600 text-sm mb-6">Adakah anda pasti mahu memadam folder "{folderToDelete}"? Parcel di dalam akan dikembalikan ke "Tiada Folder".</p>
+                <div className="flex gap-3">
+                  <button onClick={() => setFolderToDelete(null)} className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition-colors">Batal</button>
+                  <button onClick={executeDeleteFolder} className="flex-1 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl transition-colors">Padam</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {isClearAllModalOpen && (
+            <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+              <div className="bg-white w-full max-w-sm rounded-2xl p-6 animate-in zoom-in-95 shadow-2xl">
+                <h3 className="font-bold text-lg mb-2 text-gray-800">Padam Semua Data?</h3>
+                <p className="text-gray-600 text-sm mb-6">Adakah anda pasti mahu memadam semua data parcel? Tindakan ini tidak boleh diundur.</p>
+                <div className="flex gap-3">
+                  <button onClick={() => setIsClearAllModalOpen(false)} className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition-colors">Batal</button>
+                  <button onClick={executeClearAll} className="flex-1 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl transition-colors">Padam Semua</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Profile Modal */}
+          {isProfileModalOpen && (
+            <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+              <div className="bg-white w-full max-w-md rounded-2xl p-6 shadow-2xl animate-in zoom-in-95">
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="font-black text-xl text-gray-800">Profile Rider</h3>
+                  <button onClick={() => setIsProfileModalOpen(false)} className="text-gray-400 hover:text-gray-600">
+                    <X size={24} />
+                  </button>
+                </div>
+                
+                <div className="space-y-4">
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-gray-500 uppercase">Nama Rider</label>
+                    <input 
+                      type="text" 
+                      value={riderName}
+                      onChange={(e) => setRiderName(e.target.value)}
+                      placeholder="Contoh: Ahmad Courier"
+                      className="w-full border-2 border-gray-100 rounded-xl p-3 font-bold text-gray-800 focus:border-blue-500 outline-none"
+                    />
+                  </div>
+                  
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-gray-500 uppercase">Syarikat Kurier</label>
+                    <input 
+                      type="text" 
+                      value={courierCompany}
+                      onChange={(e) => setCourierCompany(e.target.value)}
+                      placeholder="Contoh: Shopee Express (SPX)"
+                      className="w-full border-2 border-gray-100 rounded-xl p-3 font-bold text-gray-800 focus:border-blue-500 outline-none"
+                    />
+                  </div>
+
+                  <div className="p-4 bg-blue-50 rounded-xl border border-blue-100">
+                    <p className="text-xs text-blue-700 leading-relaxed">
+                      <strong>Nota:</strong> Maklumat ini akan digunakan dalam mesej WhatsApp automatik kepada pelanggan.
+                    </p>
+                  </div>
+
+                  <button 
+                    onClick={handleSaveProfile}
+                    disabled={isSavingProfile || saveSuccess}
+                    className={cn(
+                      "w-full py-4 text-white font-black rounded-xl shadow-lg transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2",
+                      saveSuccess ? "bg-green-600" : "bg-blue-600 hover:bg-blue-700"
+                    )}
+                  >
+                    {isSavingProfile ? (
+                      <>
+                        <RefreshCw className="animate-spin" size={20} />
+                        Menyimpan...
+                      </>
+                    ) : saveSuccess ? (
+                      <>
+                        <CheckCircle2 size={20} />
+                        Berjaya Simpan!
+                      </>
+                    ) : (
+                      'Simpan Profile'
+                    )}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </>
       )}
+    </main>
 
       {/* Bottom Nav Hint */}
       <div className="fixed bottom-0 inset-x-0 bg-white/80 backdrop-blur-md border-t py-2 px-4 flex justify-center pointer-events-none">

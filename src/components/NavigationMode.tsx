@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
-import { Parcel } from '../types';
+import { Parcel, UserProfile } from '../types';
 import { MapContainer, TileLayer, Marker, useMap } from 'react-leaflet';
-import { X, Map as MapIcon, Navigation, CheckCircle, Package, Banknote } from 'lucide-react';
+import { X, Map as MapIcon, Navigation, CheckCircle, Package, Banknote, MessageSquare } from 'lucide-react';
 import L from 'leaflet';
 
 // Fix Leaflet's default icon path issues in React
@@ -31,11 +31,12 @@ function MapUpdater({ center }: { center: [number, number] }) {
 
 interface NavigationModeProps {
   parcels: Parcel[];
+  profile?: UserProfile | null;
   onMarkDelivered: (id: string) => void;
   onClose: () => void;
 }
 
-export function NavigationMode({ parcels, onMarkDelivered, onClose }: NavigationModeProps) {
+export function NavigationMode({ parcels, profile, onMarkDelivered, onClose }: NavigationModeProps) {
   const [currentIndex, setCurrentIndex] = useState(0);
   
   // Only navigate through parcels that were pending when we started
@@ -74,6 +75,22 @@ export function NavigationMode({ parcels, onMarkDelivered, onClose }: Navigation
 
   const openWaze = () => {
     window.open(`https://waze.com/ul?ll=${currentParcel.lat},${currentParcel.lng}&navigate=yes`, '_blank');
+  };
+
+  const sendWhatsApp = () => {
+    if (!currentParcel.recipientPhone) return;
+    
+    let phone = currentParcel.recipientPhone.replace(/\D/g, '');
+    if (phone.startsWith('0')) {
+      phone = '6' + phone;
+    } else if (!phone.startsWith('60')) {
+      phone = '60' + phone;
+    }
+
+    const riderInfo = profile?.riderName ? `${profile.riderName} (${profile.courierCompany || 'SPX'})` : 'rider Shopee Express (SPX)';
+    const message = encodeURIComponent(`Hai, saya ${riderInfo}. Parcel anda (${currentParcel.trackingNumber}) akan sampai dalam 10 minit! Sila sedia ya. Terima kasih.`);
+    const url = `https://wa.me/${phone}?text=${message}`;
+    window.open(url, '_blank');
   };
 
   return (
@@ -163,6 +180,17 @@ export function NavigationMode({ parcels, onMarkDelivered, onClose }: Navigation
             <Navigation size={18} /> Waze
           </button>
         </div>
+
+        {currentParcel.recipientPhone && (
+          <button 
+            onClick={sendWhatsApp} 
+            className="w-full bg-green-50 hover:bg-green-100 text-green-700 font-bold py-3 rounded-xl border border-green-200 active:scale-95 transition-all flex items-center justify-center gap-2"
+          >
+            <MessageSquare size={20} />
+            HANTAR WHATSAPP (10 MINIT LAGI)
+          </button>
+        )}
+
         <button 
           onClick={handleDelivered} 
           className="w-full bg-green-600 hover:bg-green-700 text-white font-black py-4 rounded-2xl shadow-[0_8px_30px_rgba(22,163,74,0.3)] active:scale-95 transition-all text-lg flex items-center justify-center gap-2"

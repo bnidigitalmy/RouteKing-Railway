@@ -1,0 +1,63 @@
+{
+  "entities": {
+    "parcel": {
+      "title": "Parcel",
+      "description": "Information about a parcel to be delivered",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "recipientName": { "type": "string" },
+        "address": { "type": "string" },
+        "trackingNumber": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "delivered"] },
+        "sequenceNumber": { "type": "number" },
+        "lat": { "type": "number" },
+        "lng": { "type": "number" },
+        "scannedAt": { "type": "number" },
+        "isCOD": { "type": "boolean" },
+        "codAmount": { "type": "number" },
+        "groupTag": { "type": "string" },
+        "folder": { "type": "string" },
+        "uid": { "type": "string", "description": "Owner's user ID" }
+      },
+      "required": ["id", "address", "trackingNumber", "status", "uid"]
+    },
+    "folder": {
+      "title": "Folder",
+      "description": "User created folders for organizing parcels",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "uid": { "type": "string" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["name", "uid"]
+    },
+    "geocache": {
+      "title": "GeoCache",
+      "description": "Cached coordinates for addresses to save API costs",
+      "type": "object",
+      "properties": {
+        "address": { "type": "string" },
+        "lat": { "type": "number" },
+        "lng": { "type": "number" },
+        "lastUpdated": { "type": "number" }
+      },
+      "required": ["address", "lat", "lng"]
+    }
+  },
+  "firestore": {
+    "/parcels/{parcelId}": {
+      "schema": "parcel",
+      "description": "Individual parcel documents"
+    },
+    "/folders/{folderId}": {
+      "schema": "folder",
+      "description": "User folders"
+    },
+    "/geocache/{addressHash}": {
+      "schema": "geocache",
+      "description": "Cached geocoding results"
+    }
+  }
+}
