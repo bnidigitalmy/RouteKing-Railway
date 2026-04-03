@@ -1,11 +1,11 @@
-import React, { useRef, useState } from 'react';
-import { Camera, Upload, Loader2, X, Banknote, MapPin, Hash, CheckCircle, User as UserIcon, Folder, Edit2, Search } from 'lucide-react';
+import React, { useRef, useState, useEffect } from 'react';
+import { Camera, Upload, Loader2, X, Banknote, MapPin, Hash, CheckCircle, User as UserIcon, Folder, Edit2, Search, RefreshCw, Phone } from 'lucide-react';
 import { extractParcelInfo } from '../lib/gemini';
 import { cn } from '../lib/utils';
 import { Parcel } from '../types';
 
 interface ScannerProps {
-  onScan?: (data: { recipientName?: string; recipientPhone?: string; address: string; trackingNumber: string; isCOD: boolean; codAmount?: number; groupTag?: string }) => void;
+  onScan?: (data: { recipientName?: string; recipientPhone?: string; address: string; trackingNumber: string; isCOD: boolean; codAmount?: number; groupTag?: string }) => Promise<void> | void;
   onMarkScan?: (trackingNumber: string) => Parcel | undefined;
   onClose: () => void;
   mode?: 'scan' | 'mark';
@@ -13,8 +13,17 @@ interface ScannerProps {
 
 export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan' }: ScannerProps) {
   const [isScanning, setIsScanning] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const galleryInputRef = useRef<HTMLInputElement>(null);
+  
+  // Live Camera States
+  const [isLive, setIsLive] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [stream, setStream] = useState<MediaStream | null>(null);
+  const [facingMode, setFacingMode] = useState<'user' | 'environment'>('environment');
 
   // Form states
   const [scannedData, setScannedData] = useState<{recipientName?: string, recipientPhone?: string, address: string, trackingNumber: string} | null>(null);
@@ -27,55 +36,140 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan' }: ScannerP
   const [isCOD, setIsCOD] = useState(false);
   const [codAmount, setCodAmount] = useState('');
 
-  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
+  // Cleanup stream on unmount
+  useEffect(() => {
+    return () => {
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+      }
+    };
+  }, [stream]);
 
+  const toggleCamera = () => {
+    const newMode = facingMode === 'user' ? 'environment' : 'user';
+    setFacingMode(newMode);
+    stopLiveCamera();
+    setTimeout(() => startLiveCamera(newMode), 100);
+  };
+
+  const startLiveCamera = async (mode: 'user' | 'environment' = facingMode) => {
+    setError(null);
+    
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setError("Pelayar anda tidak menyokong Live Camera. Sila guna 'Kamera Sistem'.");
+      return;
+    }
+
+    try {
+      // Try with specified camera first
+      const constraints = { 
+        video: { 
+          facingMode: { ideal: mode },
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        } 
+      };
+      
+      const mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+      setStream(mediaStream);
+      if (videoRef.current) {
+        videoRef.current.srcObject = mediaStream;
+      }
+      setIsLive(true);
+    } catch (err: any) {
+      console.error("Camera access error:", err);
+      let msg = "Gagal akses kamera.";
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        msg = "Izin kamera ditolak. Sila benarkan akses kamera di tetapan pelayar anda.";
+      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+        msg = "Kamera tidak dijumpai.";
+      }
+      setError(msg);
+      // Don't auto-fallback, let user choose
+    }
+  };
+
+  const stopLiveCamera = () => {
+    if (stream) {
+      stream.getTracks().forEach(track => track.stop());
+      setStream(null);
+    }
+    setIsLive(false);
+  };
+
+  const takePhoto = () => {
+    if (!videoRef.current || !canvasRef.current) return;
+
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    const context = canvas.getContext('2d');
+
+    if (context) {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      context.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const base64 = canvas.toDataURL('image/jpeg', 0.8);
+      processImage(base64);
+      stopLiveCamera();
+    }
+  };
+
+  const processImage = async (base64: string) => {
     setIsScanning(true);
     setError(null);
 
     try {
-      const reader = new FileReader();
-      reader.onload = async (e) => {
-        const base64 = e.target?.result as string;
-        try {
-          const result = await extractParcelInfo(base64);
-          
-          if (mode === 'mark' && onMarkScan) {
-            const parcel = onMarkScan(result.trackingNumber);
-            if (parcel) {
-              setFoundParcel(parcel);
-            } else {
-              setError(`Parcel dengan tracking ${result.trackingNumber} tidak dijumpai dalam senarai.`);
-            }
-            setIsScanning(false);
-            return;
-          }
-
-          setScannedData(result);
-          setEditName(result.recipientName || '');
-          setEditPhone(result.recipientPhone || '');
-          setEditAddress(result.address);
-          setEditTracking(result.trackingNumber);
-          setEditGroup('');
-          setIsCOD(false);
-          setCodAmount('');
-        } catch (err: any) {
-          const errMsg = err?.message || "Gagal membaca label.";
-          setError(`${errMsg} Pastikan gambar label terang dan jelas.`);
-          console.error("Scanner Error:", err);
-        } finally {
-          setIsScanning(false);
+      const result = await extractParcelInfo(base64);
+      
+      // Sanitize result to avoid "null" or "undefined" strings
+      const sanitize = (val: any) => {
+        if (val === null || val === undefined || String(val).toLowerCase() === 'null' || String(val).toLowerCase() === 'undefined') {
+          return '';
         }
+        return String(val).trim();
       };
-      reader.readAsDataURL(file);
-    } catch (err) {
-      setError("Gagal memproses gambar.");
+
+      if (mode === 'mark' && onMarkScan) {
+        const parcel = onMarkScan(result.trackingNumber);
+        if (parcel) {
+          setFoundParcel(parcel);
+        } else {
+          setError(`Parcel dengan tracking ${result.trackingNumber} tidak dijumpai dalam senarai.`);
+        }
+        setIsScanning(false);
+        return;
+      }
+
+      setScannedData(result);
+      setEditName(sanitize(result.recipientName) || 'Tiada Nama');
+      setEditPhone(sanitize(result.recipientPhone));
+      setEditAddress(sanitize(result.address));
+      setEditTracking(sanitize(result.trackingNumber));
+      setEditGroup('');
+      setIsCOD(false);
+      setCodAmount('');
+    } catch (err: any) {
+      const errMsg = err?.message || "Gagal membaca label.";
+      setError(`${errMsg} Pastikan gambar label terang dan jelas.`);
+      console.error("Scanner Error:", err);
+    } finally {
       setIsScanning(false);
     }
   };
 
-  const handleSubmit = () => {
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const base64 = e.target?.result as string;
+      processImage(base64);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleSubmit = async () => {
     if (!editAddress || !editTracking) {
       setError("Sila isi alamat dan nombor tracking.");
       return;
@@ -85,31 +179,84 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan' }: ScannerP
       return;
     }
 
-    onScan({
-      recipientName: editName,
-      recipientPhone: editPhone,
-      address: editAddress,
-      trackingNumber: editTracking,
-      isCOD,
-      codAmount: isCOD ? parseFloat(codAmount) : undefined,
-      groupTag: editGroup.trim() || undefined
-    });
+    setIsSaving(true);
+    try {
+      if (onScan) {
+        await onScan({
+          recipientName: editName,
+          recipientPhone: editPhone,
+          address: editAddress,
+          trackingNumber: editTracking,
+          isCOD,
+          codAmount: isCOD ? parseFloat(codAmount) : undefined,
+          groupTag: editGroup.trim() || undefined
+        });
+      }
+    } catch (err: any) {
+      setError(err?.message || "Gagal simpan parcel.");
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
-    <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4 backdrop-blur-sm overflow-y-auto">
-      <div className="bg-white rounded-2xl w-full max-w-md overflow-hidden shadow-2xl my-auto">
-        <div className={cn("p-4 border-b flex items-center justify-between text-white", mode === 'mark' ? "bg-purple-600" : "bg-blue-600")}>
+    <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center sm:p-4 backdrop-blur-sm overflow-y-auto">
+      <div className="bg-white sm:rounded-2xl w-full max-w-md min-h-screen sm:min-h-0 overflow-hidden shadow-2xl flex flex-col">
+        <div className={cn("p-4 border-b flex items-center justify-between text-white shrink-0", mode === 'mark' ? "bg-purple-600" : "bg-blue-600")}>
           <h3 className="font-bold text-lg">
-            {mode === 'mark' ? 'Mod Menanda (Tulis No.)' : (scannedData ? 'Sahkan Maklumat' : 'Scan Label Parcel')}
+            {isLive ? 'Snap Gambar Label' : (mode === 'mark' ? 'Mod Menanda (Tulis No.)' : (scannedData ? 'Sahkan Maklumat' : 'Scan Label Parcel'))}
           </h3>
-          <button onClick={onClose} className="p-1 hover:bg-black/10 rounded-full transition-colors">
+          <button onClick={isLive ? stopLiveCamera : onClose} className="p-1 hover:bg-black/10 rounded-full transition-colors">
             <X size={24} />
           </button>
         </div>
 
-        <div className="p-6 flex flex-col gap-6">
-          {isScanning ? (
+        <div className="p-6 flex flex-col gap-6 flex-1 overflow-y-auto">
+          {isLive ? (
+            <div className="flex flex-col gap-4 animate-in fade-in duration-300">
+              <div className="relative aspect-[3/4] bg-black rounded-2xl overflow-hidden border-4 border-gray-100 shadow-inner">
+                <video 
+                  ref={videoRef} 
+                  autoPlay 
+                  playsInline 
+                  className="w-full h-full object-cover"
+                />
+                {/* Overlay for scanning area */}
+                <div className="absolute inset-0 border-[40px] border-black/40 pointer-events-none">
+                  <div className="w-full h-full border-2 border-white/50 rounded-lg" />
+                </div>
+                <p className="absolute bottom-4 left-0 right-0 text-center text-white text-[10px] font-black uppercase tracking-widest bg-black/40 py-2">
+                  Letakkan label di tengah petak
+                </p>
+                <button 
+                  onClick={toggleCamera}
+                  className="absolute top-4 right-4 p-3 bg-black/40 text-white rounded-full backdrop-blur-sm active:scale-90 transition-all"
+                >
+                  <RefreshCw size={20} />
+                </button>
+              </div>
+              
+              <div className="flex gap-3">
+                <button
+                  onClick={stopLiveCamera}
+                  className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-4 rounded-xl transition-all active:scale-95"
+                >
+                  Batal
+                </button>
+                <button
+                  onClick={takePhoto}
+                  className={cn(
+                    "flex-[2] text-white font-black py-4 rounded-xl shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2",
+                    mode === 'mark' ? "bg-purple-600 hover:bg-purple-700" : "bg-blue-600 hover:bg-blue-700"
+                  )}
+                >
+                  <Camera size={24} />
+                  SNAP GAMBAR
+                </button>
+              </div>
+              <canvas ref={canvasRef} className="hidden" />
+            </div>
+          ) : isScanning ? (
             <div className="flex flex-col items-center gap-4 py-8">
               <Loader2 className="animate-spin text-blue-600" size={48} />
               <p className="text-gray-600 font-medium animate-pulse">Sedang mengecam label...</p>
@@ -137,7 +284,7 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan' }: ScannerP
               <button
                 onClick={() => {
                   setFoundParcel(null);
-                  fileInputRef.current?.click();
+                  startLiveCamera();
                 }}
                 className="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-4 rounded-xl shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2"
               >
@@ -174,7 +321,7 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan' }: ScannerP
 
               <div className="space-y-1">
                 <label className="text-xs font-bold text-gray-500 uppercase flex items-center gap-1">
-                  <Camera size={14} /> No. Phone Penerima
+                  <Phone size={14} /> No. Phone Penerima
                 </label>
                 <input 
                   type="text" 
@@ -253,10 +400,20 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan' }: ScannerP
 
               <button
                 onClick={handleSubmit}
-                className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 px-6 rounded-xl transition-all active:scale-95 shadow-lg mt-2"
+                disabled={isSaving}
+                className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 px-6 rounded-xl transition-all active:scale-95 shadow-lg mt-2 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                <CheckCircle size={20} />
-                Simpan Parcel
+                {isSaving ? (
+                  <>
+                    <RefreshCw className="animate-spin" size={20} />
+                    Menyimpan...
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle size={20} />
+                    Simpan Parcel
+                  </>
+                )}
               </button>
             </div>
           ) : (
@@ -281,27 +438,45 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan' }: ScannerP
 
               <div className="grid grid-cols-1 w-full gap-3">
                 <button
-                  onClick={() => fileInputRef.current?.click()}
+                  onClick={startLiveCamera}
                   className={cn(
                     "flex items-center justify-center gap-2 text-white font-bold py-4 px-6 rounded-xl transition-all active:scale-95 shadow-lg",
                     mode === 'mark' ? "bg-purple-600 hover:bg-purple-700" : "bg-blue-600 hover:bg-blue-700"
                   )}
                 >
                   <Camera size={20} />
-                  {mode === 'mark' ? 'Scan Sekarang' : 'Ambil Gambar'}
+                  {mode === 'mark' ? 'Scan Sekarang' : 'Live Camera (Laju)'}
                 </button>
+                
                 <button
                   onClick={() => fileInputRef.current?.click()}
                   className="flex items-center justify-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-3 px-6 rounded-xl transition-all"
                 >
-                  <Upload size={20} />
+                  <Camera size={20} className="text-gray-400" />
+                  Guna Kamera Sistem
+                </button>
+
+                <button
+                  onClick={() => galleryInputRef.current?.click()}
+                  className="flex items-center justify-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-3 px-6 rounded-xl transition-all"
+                >
+                  <Upload size={20} className="text-gray-400" />
                   Pilih dari Galeri
                 </button>
               </div>
 
               {error && (
-                <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm font-medium border border-red-100 w-full text-center">
-                  {error}
+                <div className="p-4 bg-red-50 text-red-600 rounded-xl text-sm font-medium border border-red-100 w-full text-center space-y-2">
+                  <p>{error}</p>
+                  <p className="text-[10px] text-red-400 font-normal">
+                    Tips: Sila guna pelayar Chrome atau Safari untuk pengalaman terbaik.
+                  </p>
+                  <button 
+                    onClick={() => fileInputRef.current?.click()}
+                    className="text-xs font-bold underline uppercase tracking-wider block w-full"
+                  >
+                    Klik Sini Untuk Kamera Sistem
+                  </button>
                 </div>
               )}
             </>
@@ -310,10 +485,17 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan' }: ScannerP
 
         <input
           type="file"
-          accept="image/*"
+          accept="image/*;capture=camera"
           capture="environment"
-          className="hidden"
+          className="absolute w-0 h-0 opacity-0 pointer-events-none"
           ref={fileInputRef}
+          onChange={handleFileUpload}
+        />
+        <input
+          type="file"
+          accept="image/*"
+          className="absolute w-0 h-0 opacity-0 pointer-events-none"
+          ref={galleryInputRef}
           onChange={handleFileUpload}
         />
       </div>

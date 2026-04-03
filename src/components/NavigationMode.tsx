@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Parcel, UserProfile } from '../types';
 import { MapContainer, TileLayer, Marker, useMap } from 'react-leaflet';
-import { X, Map as MapIcon, Navigation, CheckCircle, Package, Banknote, MessageSquare } from 'lucide-react';
+import { X, Map as MapIcon, Navigation, CheckCircle, Package, Banknote, MessageSquare, Phone } from 'lucide-react';
 import L from 'leaflet';
 
 // Fix Leaflet's default icon path issues in React
@@ -75,6 +75,11 @@ export function NavigationMode({ parcels, profile, onMarkDelivered, onClose }: N
 
   const openWaze = () => {
     window.open(`https://waze.com/ul?ll=${currentParcel.lat},${currentParcel.lng}&navigate=yes`, '_blank');
+  };
+
+  const makeCall = () => {
+    if (!currentParcel.recipientPhone) return;
+    window.location.href = `tel:${currentParcel.recipientPhone}`;
   };
 
   const sendWhatsApp = () => {
@@ -182,13 +187,20 @@ export function NavigationMode({ parcels, profile, onMarkDelivered, onClose }: N
         </div>
 
         {currentParcel.recipientPhone && (
-          <button 
-            onClick={sendWhatsApp} 
-            className="w-full bg-green-50 hover:bg-green-100 text-green-700 font-bold py-3 rounded-xl border border-green-200 active:scale-95 transition-all flex items-center justify-center gap-2"
-          >
-            <MessageSquare size={20} />
-            HANTAR WHATSAPP (10 MINIT LAGI)
-          </button>
+          <div className="grid grid-cols-2 gap-3">
+            <button 
+              onClick={makeCall} 
+              className="flex-1 bg-blue-50 hover:bg-blue-100 text-blue-700 font-bold py-3 rounded-xl border border-blue-200 active:scale-95 transition-all flex items-center justify-center gap-2"
+            >
+              <Phone size={20} /> CALL
+            </button>
+            <button 
+              onClick={sendWhatsApp} 
+              className="flex-1 bg-green-50 hover:bg-green-100 text-green-700 font-bold py-3 rounded-xl border border-green-200 active:scale-95 transition-all flex items-center justify-center gap-2"
+            >
+              <MessageSquare size={20} /> WHATSAPP
+            </button>
+          </div>
         )}
 
         <button 

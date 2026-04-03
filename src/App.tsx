@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Plus, MapPin, Navigation, Trash2, RefreshCw, Package, ArrowRight, Camera, Search, LayoutGrid, List, Map, Filter, Folder, MoreVertical, LogOut, LogIn, AlertCircle, X, Edit2, User as UserIcon, CheckCircle2 } from 'lucide-react';
+import { Plus, MapPin, Navigation, Trash2, RefreshCw, Package, ArrowRight, Camera, Search, LayoutGrid, List, Map, Filter, Folder, MoreVertical, LogOut, LogIn, AlertCircle, X, Edit2, User as UserIcon, CheckCircle2, Copy, Share2 } from 'lucide-react';
 import { Parcel, UserProfile } from './types';
 import { Scanner } from './components/Scanner';
 import { ParcelCard } from './components/ParcelCard';
@@ -10,6 +10,7 @@ import { optimizeRoute } from './lib/optimizer';
 import { getCoordinates } from './lib/gemini';
 import { cn } from './lib/utils';
 import confetti from 'canvas-confetti';
+import { motion, AnimatePresence } from 'motion/react';
 import { 
   auth, 
   db, 
@@ -44,22 +45,27 @@ export default function App() {
   // Search & Filter States
   const [searchQuery, setSearchQuery] = useState('');
   const [showFilters, setShowFilters] = useState(false);
-  const [filterStatus, setFilterStatus] = useState<'all' | 'pending' | 'delivered'>('all');
+  const [filterStatus, setFilterStatus] = useState<'all' | 'pending' | 'delivered'>('pending');
   const [filterCOD, setFilterCOD] = useState<boolean>(false);
   const [filterGroup, setFilterGroup] = useState<string>('all');
 
   // Folder States
   const [folders, setFolders] = useState<string[]>([]);
-  const [movingParcelId, setMovingParcelId] = useState<string | null>(null);
+  const [parcelOptionsId, setParcelOptionsId] = useState<string | null>(null);
   
   // Modal States
   const [isCreateFolderModalOpen, setIsCreateFolderModalOpen] = useState(false);
+  const [isEditParcelModalOpen, setIsEditParcelModalOpen] = useState(false);
+  const [editingParcel, setEditingParcel] = useState<Parcel | null>(null);
   const [newFolderName, setNewFolderName] = useState('');
   const [folderToDelete, setFolderToDelete] = useState<string | null>(null);
+  const [parcelToDelete, setParcelToDelete] = useState<string | null>(null);
   const [isClearAllModalOpen, setIsClearAllModalOpen] = useState(false);
+  const [isClearDeliveredModalOpen, setIsClearDeliveredModalOpen] = useState(false);
   const [isMarkingModeOpen, setIsMarkingModeOpen] = useState(false);
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [riderName, setRiderName] = useState('');
@@ -145,15 +151,31 @@ export default function App() {
     if (!user) return;
     const coords = await getCoordinates(data.address);
     
+    const sanitize = (val: any) => {
+      if (val === null || val === undefined || String(val).toLowerCase() === 'null' || String(val).toLowerCase() === 'undefined') {
+        return '';
+      }
+      return String(val).trim();
+    };
+
+    const tracking = sanitize(data.trackingNumber);
+    const existing = parcels.find(p => p.trackingNumber === tracking);
+    if (existing) {
+      // Instead of window.confirm which might hang in iframe, we use a simple check
+      // If the user really wants to avoid duplicates, they can delete the old one
+      // For now, let's just allow it but maybe we can add a flag later
+      console.log(`Tracking ${tracking} already exists at Stop #${existing.sequenceNumber}`);
+    }
+
     const parcelId = typeof crypto.randomUUID === 'function' 
       ? crypto.randomUUID() 
       : Date.now().toString(36) + Math.random().toString(36).substring(2);
     const newParcel: any = {
       id: parcelId,
-      recipientName: data.recipientName || 'Tiada Nama',
-      recipientPhone: data.recipientPhone || '',
+      recipientName: sanitize(data.recipientName) || 'Tiada Nama',
+      recipientPhone: sanitize(data.recipientPhone),
       address: data.address,
-      trackingNumber: data.trackingNumber,
+      trackingNumber: tracking,
       status: 'pending',
       sequenceNumber: parcels.length + 1,
       lat: coords.lat,
@@ -183,9 +205,62 @@ export default function App() {
     }
   };
 
+  const handleDeleteParcel = async (id: string) => {
+    if (!user) return;
+    setParcelToDelete(id);
+    setParcelOptionsId(null);
+  };
+
+  const confirmDeleteParcel = async () => {
+    if (!user || !parcelToDelete) return;
+    
+    try {
+      await deleteDoc(doc(db, 'parcels', parcelToDelete));
+      setParcelToDelete(null);
+    } catch (e) {
+      handleFirestoreError(e, OperationType.DELETE, `parcels/${parcelToDelete}`);
+    }
+  };
+
+  const handleEditParcel = (parcel: Parcel) => {
+    setEditingParcel(parcel);
+    setIsEditParcelModalOpen(true);
+    setParcelOptionsId(null);
+  };
+
+  const submitEditParcel = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingParcel || !user) return;
+
+    setIsSavingEdit(true);
+    try {
+      await updateDoc(doc(db, 'parcels', editingParcel.id), {
+        recipientName: editingParcel.recipientName,
+        recipientPhone: editingParcel.recipientPhone,
+        address: editingParcel.address,
+        trackingNumber: editingParcel.trackingNumber,
+        isCOD: editingParcel.isCOD,
+        codAmount: editingParcel.codAmount,
+        groupTag: editingParcel.groupTag
+      });
+      setIsEditParcelModalOpen(false);
+      setEditingParcel(null);
+    } catch (e) {
+      handleFirestoreError(e, OperationType.UPDATE, `parcels/${editingParcel.id}`);
+    } finally {
+      setIsSavingEdit(false);
+    }
+  };
+
   const handleStatusChange = async (id: string, status: Parcel['status']) => {
     try {
-      await updateDoc(doc(db, 'parcels', id), { status });
+      const updateData: any = { status };
+      if (status === 'delivered') {
+        updateData.deliveredAt = Date.now();
+      } else {
+        updateData.deliveredAt = null; // Reset if moved back to pending
+      }
+      await updateDoc(doc(db, 'parcels', id), updateData);
       
       if (status === 'delivered') {
         const remaining = parcels.filter(p => p.id !== id && p.status !== 'delivered').length;
@@ -261,12 +336,19 @@ export default function App() {
 
   const handleSaveProfile = async () => {
     if (!user) return;
+    if (!riderName.trim()) {
+      setError("Sila masukkan nama rider.");
+      return;
+    }
+    
     setIsSavingProfile(true);
+    setError(null);
+    
     try {
       await setDoc(doc(db, 'profiles', user.uid), {
         uid: user.uid,
-        riderName,
-        courierCompany
+        riderName: riderName.trim(),
+        courierCompany: courierCompany.trim()
       });
       
       // Trigger success feedback
@@ -285,7 +367,9 @@ export default function App() {
       }, 700);
     } catch (e) {
       setIsSavingProfile(false);
-      handleFirestoreError(e, OperationType.WRITE, `profiles/${user.uid}`);
+      const errorMessage = e instanceof Error ? e.message : "Gagal menyimpan profile.";
+      setError(errorMessage);
+      console.error("Profile Save Error:", e);
     }
   };
 
@@ -314,6 +398,18 @@ export default function App() {
       setIsClearAllModalOpen(false);
     } catch (e) {
       handleFirestoreError(e, OperationType.DELETE, 'parcels');
+    }
+  };
+
+  const executeClearDelivered = async () => {
+    if (!user) return;
+    try {
+      const deliveredParcels = parcels.filter(p => p.status === 'delivered');
+      const promises = deliveredParcels.map(p => deleteDoc(doc(db, 'parcels', p.id)));
+      await Promise.all(promises);
+      setIsClearDeliveredModalOpen(false);
+    } catch (e) {
+      handleFirestoreError(e, OperationType.DELETE, 'parcels/delivered');
     }
   };
 
@@ -626,6 +722,40 @@ export default function App() {
         </div>
 
         {/* Content Area */}
+        <div className="max-w-md mx-auto mb-6">
+          <div className="flex bg-gray-100 p-1 rounded-xl mb-4">
+            <button 
+              onClick={() => setFilterStatus('pending')}
+              className={cn(
+                "flex-1 py-2.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2",
+                filterStatus === 'pending' ? "bg-white text-blue-600 shadow-sm" : "text-gray-500 hover:text-gray-700"
+              )}
+            >
+              <Package size={14} />
+              Aktif ({parcels.filter(p => p.status === 'pending').length})
+            </button>
+            <button 
+              onClick={() => setFilterStatus('delivered')}
+              className={cn(
+                "flex-1 py-2.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2",
+                filterStatus === 'delivered' ? "bg-white text-green-600 shadow-sm" : "text-gray-500 hover:text-gray-700"
+              )}
+            >
+              <CheckCircle2 size={14} />
+              Sejarah ({parcels.filter(p => p.status === 'delivered').length})
+            </button>
+          </div>
+
+          {filterStatus === 'delivered' && parcels.filter(p => p.status === 'delivered').length > 0 && (
+            <button 
+              onClick={() => setIsClearDeliveredModalOpen(true)}
+              className="w-full py-2 text-red-500 text-[10px] font-black uppercase tracking-widest hover:bg-red-50 rounded-lg transition-colors flex items-center justify-center gap-2 mb-4 border border-red-100 border-dashed"
+            >
+              <Trash2 size={12} /> Padam Semua Sejarah
+            </button>
+          )}
+        </div>
+
         {viewMode === 'map' ? (
           <div className="animate-in fade-in slide-in-from-bottom-4 duration-300">
             <MapPreview parcels={filteredParcels} startPoint={startPoint} />
@@ -712,7 +842,7 @@ export default function App() {
                         parcel={parcel} 
                         profile={profile}
                         onStatusChange={handleStatusChange}
-                        onMoveClick={() => setMovingParcelId(parcel.id)}
+                        onMoveClick={() => setParcelOptionsId(parcel.id)}
                       />
                     ))}
                     {folderParcels.length === 0 && folder !== 'Tiada Folder' && (
@@ -737,14 +867,22 @@ export default function App() {
         )}
 
           {/* Floating Action Button */}
-          <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-40">
-            <button
+          <div className="fixed bottom-10 left-1/2 -translate-x-1/2 z-40">
+            <motion.button
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.9 }}
+              initial={{ y: 100, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
               onClick={() => setIsScannerOpen(true)}
-              className="flex items-center gap-3 bg-blue-600 hover:bg-blue-700 text-white font-black py-4 px-8 rounded-full shadow-[0_10px_40px_rgba(37,99,235,0.4)] transition-all active:scale-90 group"
+              className="flex items-center gap-3 bg-blue-600 text-white font-black py-5 px-10 rounded-full shadow-[0_20px_50px_rgba(37,99,235,0.3)] border-4 border-white transition-all group relative overflow-hidden"
             >
-              <Camera size={24} className="group-hover:scale-110 transition-transform" />
-              <span className="text-lg">SCAN PARCEL</span>
-            </button>
+              <div className="absolute inset-0 bg-gradient-to-tr from-blue-700 to-blue-500 opacity-0 group-hover:opacity-100 transition-opacity" />
+              <Camera size={28} className="relative z-10 group-hover:rotate-12 transition-transform" />
+              <span className="text-xl relative z-10 tracking-tight">SCAN PARCEL</span>
+              
+              {/* Pulse effect */}
+              <span className="absolute inset-0 rounded-full bg-blue-400 animate-ping opacity-20 pointer-events-none" />
+            </motion.button>
           </div>
 
           {/* Scanner Modal */}
@@ -774,47 +912,231 @@ export default function App() {
             />
           )}
 
-          {/* Move to Folder Modal */}
-          {movingParcelId && (
-            <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-4 backdrop-blur-sm">
-              <div className="bg-white w-full max-w-sm rounded-t-2xl sm:rounded-2xl p-6 animate-in slide-in-from-bottom-full sm:slide-in-from-bottom-0 sm:zoom-in-95 shadow-2xl">
-                <h3 className="font-bold text-lg mb-4 text-gray-800">Pindah ke Folder</h3>
-                <div className="space-y-2 max-h-[60vh] overflow-y-auto">
-                  <button
-                    onClick={async () => {
-                      try {
-                        await updateDoc(doc(db, 'parcels', movingParcelId), { folder: null });
-                        setMovingParcelId(null);
-                      } catch (e) { handleFirestoreError(e, OperationType.UPDATE, `parcels/${movingParcelId}`); }
-                    }}
-                    className="w-full text-left px-4 py-3 rounded-xl hover:bg-gray-100 font-medium text-gray-700 flex items-center gap-3 transition-colors"
-                  >
-                    <Folder size={18} className="text-gray-400" /> Tiada Folder
+        <AnimatePresence>
+          {/* Parcel Options Modal */}
+          {parcelOptionsId && (
+            <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center backdrop-blur-sm" onClick={() => setParcelOptionsId(null)}>
+              <motion.div 
+                key="parcel-options"
+                initial={{ y: "100%" }}
+                animate={{ y: 0 }}
+                exit={{ y: "100%" }}
+                transition={{ type: "spring", damping: 25, stiffness: 300 }}
+                className="bg-white w-full max-w-md rounded-t-[2.5rem] sm:rounded-3xl p-8 shadow-2xl" 
+                onClick={e => e.stopPropagation()}
+              >
+                <div className="w-12 h-1.5 bg-gray-200 rounded-full mx-auto mb-6 sm:hidden" />
+                
+                <div className="flex items-center justify-between mb-8">
+                  <div>
+                    <h3 className="font-black text-2xl text-gray-900 tracking-tight">Pilihan Parcel</h3>
+                    <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mt-1">
+                      {parcels.find(p => p.id === parcelOptionsId)?.trackingNumber}
+                    </p>
+                  </div>
+                  <button onClick={() => setParcelOptionsId(null)} className="p-3 bg-gray-50 hover:bg-gray-100 rounded-2xl transition-colors">
+                    <X size={20} className="text-gray-500" />
                   </button>
-                  {folders.map(f => (
-                    <button
-                      key={f}
-                      onClick={async () => {
-                        try {
-                          await updateDoc(doc(db, 'parcels', movingParcelId), { folder: f });
-                          setMovingParcelId(null);
-                        } catch (e) { handleFirestoreError(e, OperationType.UPDATE, `parcels/${movingParcelId}`); }
-                      }}
-                      className="w-full text-left px-4 py-3 rounded-xl hover:bg-blue-50 text-blue-700 font-bold flex items-center gap-3 transition-colors"
-                    >
-                      <Folder size={18} className="text-blue-500" /> {f}
-                    </button>
-                  ))}
-                  {folders.length === 0 && (
-                    <p className="text-sm text-gray-500 text-center py-4">Sila cipta folder baru terlebih dahulu.</p>
-                  )}
                 </div>
-                <button 
-                  onClick={() => setMovingParcelId(null)} 
-                  className="mt-6 w-full py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition-colors"
-                >
-                  Batal
-                </button>
+
+                <div className="space-y-4">
+                  <div className="grid grid-cols-2 gap-3">
+                    <button
+                      onClick={() => {
+                        const p = parcels.find(p => p.id === parcelOptionsId);
+                        if (p) handleEditParcel(p);
+                      }}
+                      className="flex items-center gap-3 p-4 rounded-2xl bg-blue-50 text-blue-700 hover:bg-blue-100 transition-all active:scale-95"
+                    >
+                      <div className="bg-white p-2 rounded-xl shadow-sm">
+                        <Edit2 size={18} />
+                      </div>
+                      <span className="font-black text-xs uppercase">Edit</span>
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(parcels.find(p => p.id === parcelOptionsId)?.trackingNumber || '');
+                        setParcelOptionsId(null);
+                      }}
+                      className="flex items-center gap-3 p-4 rounded-2xl bg-gray-50 text-gray-700 hover:bg-gray-100 transition-all active:scale-95"
+                    >
+                      <div className="bg-white p-2 rounded-xl shadow-sm">
+                        <Copy size={18} />
+                      </div>
+                      <span className="font-black text-xs uppercase">Salin</span>
+                    </button>
+
+                    <button
+                      onClick={async () => {
+                        const p = parcels.find(p => p.id === parcelOptionsId);
+                        if (p && navigator.share) {
+                          try {
+                            await navigator.share({
+                              title: `Parcel ${p.trackingNumber}`,
+                              text: `Status: ${p.status === 'delivered' ? 'Selesai' : 'Dalam Penghantaran'}\nTracking: ${p.trackingNumber}\nAlamat: ${p.address}`,
+                              url: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(p.address)}`
+                            });
+                          } catch (e) { console.error(e); }
+                        }
+                        setParcelOptionsId(null);
+                      }}
+                      className="flex items-center gap-3 p-4 rounded-2xl bg-purple-50 text-purple-700 hover:bg-purple-100 transition-all active:scale-95"
+                    >
+                      <div className="bg-white p-2 rounded-xl shadow-sm">
+                        <Share2 size={18} />
+                      </div>
+                      <span className="font-black text-xs uppercase">Share</span>
+                    </button>
+
+                    <button
+                      onClick={() => handleDeleteParcel(parcelOptionsId)}
+                      className="flex items-center gap-3 p-4 rounded-2xl bg-red-50 text-red-600 hover:bg-red-100 transition-all active:scale-95"
+                    >
+                      <div className="bg-white p-2 rounded-xl shadow-sm">
+                        <Trash2 size={18} />
+                      </div>
+                      <span className="font-black text-xs uppercase">Padam</span>
+                    </button>
+                  </div>
+
+                  <div className="pt-6 border-t border-gray-100">
+                    <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-4 px-2">Pindah ke Folder</p>
+                    <div className="grid grid-cols-2 gap-3 max-h-[30vh] overflow-y-auto p-1">
+                      <button
+                        onClick={async () => {
+                          try {
+                            await updateDoc(doc(db, 'parcels', parcelOptionsId), { folder: null });
+                            setParcelOptionsId(null);
+                          } catch (e) { handleFirestoreError(e, OperationType.UPDATE, `parcels/${parcelOptionsId}`); }
+                        }}
+                        className="p-4 rounded-2xl border-2 border-gray-100 hover:border-gray-200 text-gray-600 font-bold text-xs flex items-center justify-center gap-2 transition-all"
+                      >
+                        <Folder size={16} className="text-gray-400" /> Tiada
+                      </button>
+                      {folders.map(f => (
+                        <button
+                          key={f}
+                          onClick={async () => {
+                            try {
+                              await updateDoc(doc(db, 'parcels', parcelOptionsId), { folder: f });
+                              setParcelOptionsId(null);
+                            } catch (e) { handleFirestoreError(e, OperationType.UPDATE, `parcels/${parcelOptionsId}`); }
+                          }}
+                          className="p-4 rounded-2xl border-2 border-blue-100 bg-blue-50/50 hover:bg-blue-50 text-blue-700 font-bold text-xs flex items-center justify-center gap-2 transition-all"
+                        >
+                          <Folder size={16} className="text-blue-500" /> {f}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+
+          {/* Edit Parcel Modal */}
+          {isEditParcelModalOpen && editingParcel && (
+            <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+              <div className="bg-white w-full max-w-md rounded-2xl overflow-hidden shadow-2xl animate-in zoom-in-95">
+                <div className="bg-blue-600 p-4 flex items-center justify-between text-white">
+                  <h3 className="font-bold text-lg">Edit Maklumat Parcel</h3>
+                  <button onClick={() => setIsEditParcelModalOpen(false)} className="p-1 hover:bg-black/10 rounded-full">
+                    <X size={24} />
+                  </button>
+                </div>
+                <form onSubmit={submitEditParcel} className="p-6 space-y-4 max-h-[80vh] overflow-y-auto">
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-gray-500 uppercase">Tracking Number</label>
+                    <input 
+                      type="text" 
+                      value={editingParcel.trackingNumber}
+                      onChange={(e) => setEditingParcel({...editingParcel, trackingNumber: e.target.value})}
+                      className="w-full border-2 border-gray-200 rounded-xl p-3 font-bold text-gray-800 focus:border-blue-500 outline-none"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-gray-500 uppercase">Nama Penerima</label>
+                    <input 
+                      type="text" 
+                      value={editingParcel.recipientName}
+                      onChange={(e) => setEditingParcel({...editingParcel, recipientName: e.target.value})}
+                      className="w-full border-2 border-gray-200 rounded-xl p-3 font-bold text-gray-800 focus:border-blue-500 outline-none"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-gray-500 uppercase">No. Phone</label>
+                    <input 
+                      type="text" 
+                      value={editingParcel.recipientPhone || ''}
+                      onChange={(e) => setEditingParcel({...editingParcel, recipientPhone: e.target.value})}
+                      className="w-full border-2 border-gray-200 rounded-xl p-3 font-bold text-gray-800 focus:border-blue-500 outline-none"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-gray-500 uppercase">Alamat</label>
+                    <textarea 
+                      value={editingParcel.address}
+                      onChange={(e) => setEditingParcel({...editingParcel, address: e.target.value})}
+                      rows={3}
+                      className="w-full border-2 border-gray-200 rounded-xl p-3 text-sm text-gray-800 focus:border-blue-500 outline-none resize-none"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-gray-500 uppercase">Tag Kawasan</label>
+                    <input 
+                      type="text" 
+                      value={editingParcel.groupTag || ''}
+                      onChange={(e) => setEditingParcel({...editingParcel, groupTag: e.target.value})}
+                      className="w-full border-2 border-gray-200 rounded-xl p-3 font-bold text-gray-800 focus:border-blue-500 outline-none"
+                    />
+                  </div>
+                  <div className="flex items-center justify-between p-4 bg-gray-50 rounded-xl border-2 border-gray-100">
+                    <label className="font-bold text-gray-700">Parcel COD?</label>
+                    <input 
+                      type="checkbox" 
+                      checked={editingParcel.isCOD}
+                      onChange={(e) => setEditingParcel({...editingParcel, isCOD: e.target.checked})}
+                      className="w-6 h-6 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    />
+                  </div>
+                  {editingParcel.isCOD && (
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-gray-500 uppercase">Jumlah COD (RM)</label>
+                      <input 
+                        type="number" 
+                        step="0.01"
+                        value={editingParcel.codAmount || ''}
+                        onChange={(e) => setEditingParcel({...editingParcel, codAmount: parseFloat(e.target.value)})}
+                        className="w-full border-2 border-orange-200 rounded-xl p-3 font-bold text-orange-600 focus:border-orange-500 outline-none"
+                      />
+                    </div>
+                  )}
+                  <div className="flex gap-3 pt-4">
+                    <button 
+                      type="button"
+                      onClick={() => setIsEditParcelModalOpen(false)}
+                      className="flex-1 py-4 bg-gray-100 text-gray-700 font-bold rounded-xl"
+                    >
+                      Batal
+                    </button>
+                    <button 
+                      type="submit"
+                      disabled={isSavingEdit}
+                      className="flex-1 py-4 bg-blue-600 text-white font-bold rounded-xl shadow-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                    >
+                      {isSavingEdit ? (
+                        <>
+                          <RefreshCw className="animate-spin" size={20} />
+                          Simpan...
+                        </>
+                      ) : (
+                        'Simpan Perubahan'
+                      )}
+                    </button>
+                  </div>
+                </form>
               </div>
             </div>
           )}
@@ -867,70 +1189,113 @@ export default function App() {
             </div>
           )}
 
+          {isClearDeliveredModalOpen && (
+            <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+              <div className="bg-white w-full max-w-sm rounded-2xl p-6 animate-in zoom-in-95 shadow-2xl">
+                <h3 className="font-bold text-lg mb-2 text-gray-800">Padam Sejarah?</h3>
+                <p className="text-gray-600 text-sm mb-6">Adakah anda pasti mahu memadam semua sejarah penghantaran yang telah selesai?</p>
+                <div className="flex gap-3">
+                  <button onClick={() => setIsClearDeliveredModalOpen(false)} className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition-colors">Batal</button>
+                  <button onClick={executeClearDelivered} className="flex-1 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl transition-colors">Padam Sejarah</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {parcelToDelete && (
+            <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+              <div className="bg-white w-full max-w-sm rounded-2xl p-6 animate-in zoom-in-95 shadow-2xl">
+                <h3 className="font-bold text-lg mb-2 text-gray-800">Padam Parcel?</h3>
+                <p className="text-gray-600 text-sm mb-6">Adakah anda pasti mahu memadam parcel ini?</p>
+                <div className="flex gap-3">
+                  <button onClick={() => setParcelToDelete(null)} className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition-colors">Batal</button>
+                  <button onClick={confirmDeleteParcel} className="flex-1 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl transition-colors">Padam</button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Profile Modal */}
           {isProfileModalOpen && (
             <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
-              <div className="bg-white w-full max-w-md rounded-2xl p-6 shadow-2xl animate-in zoom-in-95">
-                <div className="flex items-center justify-between mb-6">
-                  <h3 className="font-black text-xl text-gray-800">Profile Rider</h3>
-                  <button onClick={() => setIsProfileModalOpen(false)} className="text-gray-400 hover:text-gray-600">
-                    <X size={24} />
-                  </button>
-                </div>
+              <motion.div 
+                initial={{ scale: 0.9, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                className="bg-white w-full max-w-md rounded-[2.5rem] p-8 shadow-2xl relative overflow-hidden"
+              >
+                <div className="absolute top-0 right-0 -mr-12 -mt-12 w-40 h-40 bg-blue-50 rounded-full" />
                 
-                <div className="space-y-4">
-                  <div className="space-y-1">
-                    <label className="text-xs font-bold text-gray-500 uppercase">Nama Rider</label>
-                    <input 
-                      type="text" 
-                      value={riderName}
-                      onChange={(e) => setRiderName(e.target.value)}
-                      placeholder="Contoh: Ahmad Courier"
-                      className="w-full border-2 border-gray-100 rounded-xl p-3 font-bold text-gray-800 focus:border-blue-500 outline-none"
-                    />
-                  </div>
-                  
-                  <div className="space-y-1">
-                    <label className="text-xs font-bold text-gray-500 uppercase">Syarikat Kurier</label>
-                    <input 
-                      type="text" 
-                      value={courierCompany}
-                      onChange={(e) => setCourierCompany(e.target.value)}
-                      placeholder="Contoh: Shopee Express (SPX)"
-                      className="w-full border-2 border-gray-100 rounded-xl p-3 font-bold text-gray-800 focus:border-blue-500 outline-none"
-                    />
+                <div className="relative z-10">
+                  <div className="flex items-center justify-between mb-8">
+                    <div>
+                      <h3 className="font-black text-2xl text-gray-900 tracking-tight">Profile Rider</h3>
+                      <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mt-1">Konfigurasi Akaun</p>
+                    </div>
+                    <button onClick={() => setIsProfileModalOpen(false)} className="p-3 bg-gray-50 hover:bg-gray-100 rounded-2xl transition-colors">
+                      <X size={20} className="text-gray-500" />
+                    </button>
                   </div>
 
-                  <div className="p-4 bg-blue-50 rounded-xl border border-blue-100">
-                    <p className="text-xs text-blue-700 leading-relaxed">
-                      <strong>Nota:</strong> Maklumat ini akan digunakan dalam mesej WhatsApp automatik kepada pelanggan.
-                    </p>
-                  </div>
+                  <div className="space-y-6">
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest px-1">Nama Rider</label>
+                      <div className="relative">
+                        <UserIcon className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+                        <input 
+                          type="text" 
+                          value={riderName}
+                          onChange={(e) => setRiderName(e.target.value)}
+                          placeholder="Masukkan nama anda"
+                          className="w-full border-2 border-gray-100 bg-gray-50/50 rounded-2xl py-4 pl-12 pr-4 font-bold text-gray-800 focus:border-blue-500 focus:bg-white outline-none transition-all"
+                        />
+                      </div>
+                    </div>
 
-                  <button 
-                    onClick={handleSaveProfile}
-                    disabled={isSavingProfile || saveSuccess}
-                    className={cn(
-                      "w-full py-4 text-white font-black rounded-xl shadow-lg transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2",
-                      saveSuccess ? "bg-green-600" : "bg-blue-600 hover:bg-blue-700"
-                    )}
-                  >
-                    {isSavingProfile ? (
-                      <>
-                        <RefreshCw className="animate-spin" size={20} />
-                        Menyimpan...
-                      </>
-                    ) : saveSuccess ? (
-                      <>
-                        <CheckCircle2 size={20} />
-                        Berjaya Simpan!
-                      </>
-                    ) : (
-                      'Simpan Profile'
-                    )}
-                  </button>
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest px-1">Syarikat Kurier</label>
+                      <div className="relative">
+                        <Package className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+                        <input 
+                          type="text" 
+                          value={courierCompany}
+                          onChange={(e) => setCourierCompany(e.target.value)}
+                          placeholder="Contoh: Shopee Express (SPX)"
+                          className="w-full border-2 border-gray-100 bg-gray-50/50 rounded-2xl py-4 pl-12 pr-4 font-bold text-gray-800 focus:border-blue-500 focus:bg-white outline-none transition-all"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="p-5 bg-blue-50 rounded-[1.5rem] border border-blue-100">
+                      <p className="text-xs text-blue-700 leading-relaxed font-medium">
+                        <strong>Nota:</strong> Maklumat ini akan digunakan dalam mesej WhatsApp automatik kepada pelanggan untuk nampak lebih profesional.
+                      </p>
+                    </div>
+
+                    <button 
+                      onClick={handleSaveProfile}
+                      disabled={isSavingProfile || saveSuccess}
+                      className={cn(
+                        "w-full py-5 text-white font-black rounded-2xl shadow-xl transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-3 text-lg",
+                        saveSuccess ? "bg-green-600 shadow-green-100" : "bg-blue-600 hover:bg-blue-700 shadow-blue-100"
+                      )}
+                    >
+                      {isSavingProfile ? (
+                        <>
+                          <RefreshCw className="animate-spin" size={24} />
+                          Menyimpan...
+                        </>
+                      ) : saveSuccess ? (
+                        <>
+                          <CheckCircle2 size={24} />
+                          Berjaya!
+                        </>
+                      ) : (
+                        'Simpan Profile'
+                      )}
+                    </button>
+                  </div>
                 </div>
-              </div>
+              </motion.div>
             </div>
           )}
         </>

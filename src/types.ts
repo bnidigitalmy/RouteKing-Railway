@@ -9,6 +9,7 @@ export interface Parcel {
   lat?: number;
   lng?: number;
   scannedAt: number;
+  deliveredAt?: number;
   isCOD?: boolean;
   codAmount?: number;
   groupTag?: string;

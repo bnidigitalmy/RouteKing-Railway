@@ -132,8 +132,13 @@ export async function getCoordinates(address: string) {
   if (googleMapsKey) {
     try {
       const query = encodeURIComponent(address);
-      // components=country:MY restricts the search to Malaysia
-      const response = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?address=${query}&components=country:MY&key=${googleMapsKey}`);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
+      
+      const response = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?address=${query}&components=country:MY&key=${googleMapsKey}`, {
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
       const data = await response.json();
 
       if (data.status === 'OK' && data.results.length > 0) {
@@ -160,12 +165,16 @@ export async function getCoordinates(address: string) {
         .trim();
 
       const query = encodeURIComponent(cleanAddress);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
       
       const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${query}&countrycodes=my&limit=1`, {
+        signal: controller.signal,
         headers: {
           'Accept-Language': 'ms,en-US;q=0.7,en;q=0.3'
         }
       });
+      clearTimeout(timeoutId);
       
       const data = await response.json();
 
