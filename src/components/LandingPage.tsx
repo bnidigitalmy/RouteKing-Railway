@@ -15,7 +15,12 @@ import {
   Fuel,
   Moon,
   MessageSquareX,
-  XCircle
+  XCircle,
+  Heart,
+  Smile,
+  Coins,
+  Home,
+  Coffee
 } from 'lucide-react';
 
 interface LandingPageProps {
@@ -279,6 +284,72 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart, isLoggingIn }
               >
                 Selesaikan Masalah Saya Sekarang
               </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Benefits/Outcomes Section (Emotional Trigger) */}
+      <section className="py-24 px-6 bg-blue-600 relative overflow-hidden">
+        <div className="absolute top-0 left-0 w-full h-full bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] opacity-10"></div>
+        <div className="max-w-7xl mx-auto relative z-10">
+          <div className="text-center max-w-3xl mx-auto mb-20 space-y-4">
+            <h2 className="text-3xl lg:text-5xl font-black text-white tracking-tight">
+              Bayangkan Hari Anda <span className="text-yellow-400">Selepas</span> Guna RouteKing...
+            </h2>
+            <p className="text-blue-100 font-medium text-lg">Bukan sekadar app, tapi kawan baik yang bantu anda ubah hidup.</p>
+          </div>
+
+          <div className="grid md:grid-cols-2 gap-8">
+            {[
+              {
+                icon: <Coins className="text-yellow-400" size={32} />,
+                title: "Income Melimpah Ruah",
+                desc: "Bila route dah efisien, abang boleh hantar lebih banyak parcel dalam masa singkat. Lebih banyak hantaran = Lebih banyak komisyen masuk poket!",
+                tag: "Poket Tebal"
+              },
+              {
+                icon: <Home className="text-green-400" size={32} />,
+                title: "Balik Awal, Rehat Cukup",
+                desc: "Tak perlu lagi hantar parcel sampai malam. Settle kerja pukul 4-5 petang, terus boleh balik main dengan anak-anak atau lepak minum dengan tenang.",
+                tag: "Masa Berkualiti"
+              },
+              {
+                icon: <Heart className="text-red-400" size={32} />,
+                title: "Kepala Tak Pening, Hati Tenang",
+                desc: "Tak perlu lagi gaduh dengan customer atau pening fikir jalan mana dulu. Ikut je arahan sistem, kerja jadi sangat 'smooth' dan tanpa stress.",
+                tag: "Mental Health"
+              },
+              {
+                icon: <Smile className="text-blue-400" size={32} />,
+                title: "Kerja Jadi Lebih Enjoy",
+                desc: "Bila semua dah tersusun, abang akan rasa lebih bersemangat nak keluar kerja. Tak rasa macam beban, tapi rasa macam satu cabaran yang menyeronokkan!",
+                tag: "Vibe Positif"
+              }
+            ].map((item, idx) => (
+              <motion.div 
+                key={idx}
+                whileHover={{ y: -10 }}
+                className="p-8 bg-white/10 backdrop-blur-md rounded-[2.5rem] border border-white/20 flex flex-col md:flex-row gap-6 items-start"
+              >
+                <div className="w-16 h-16 bg-white/10 rounded-2xl flex items-center justify-center shrink-0">
+                  {item.icon}
+                </div>
+                <div className="space-y-3">
+                  <div className="inline-block px-3 py-1 bg-white/20 rounded-full text-[10px] font-black text-white uppercase tracking-widest">
+                    {item.tag}
+                  </div>
+                  <h3 className="text-2xl font-black text-white">{item.title}</h3>
+                  <p className="text-blue-100 font-medium leading-relaxed">{item.desc}</p>
+                </div>
+              </motion.div>
+            ))}
+          </div>
+
+          <div className="mt-20 text-center">
+            <div className="inline-flex flex-col items-center p-8 bg-yellow-400 rounded-[3rem] shadow-2xl shadow-yellow-500/40 rotate-1 hover:rotate-0 transition-transform cursor-default">
+              <p className="text-blue-900 font-black text-xl lg:text-3xl mb-2 italic">"Dulu balik pukul 9 malam, sekarang pukul 5 dah sampai rumah!"</p>
+              <p className="text-blue-800 font-bold text-sm">- Abang Man, Rider SPX (Pengguna Setia)</p>
             </div>
           </div>
         </div>
