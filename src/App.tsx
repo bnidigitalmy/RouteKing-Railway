@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
+import { LandingPage } from './components/LandingPage';
 import { Plus, MapPin, Navigation, Trash2, RefreshCw, Package, ArrowRight, Camera, Search, LayoutGrid, List, Map, Filter, Folder, MoreVertical, LogOut, LogIn, AlertCircle, X, Edit2, User as UserIcon, CheckCircle2, Copy, Share2 } from 'lucide-react';
 import { Parcel, UserProfile } from './types';
 import { Scanner } from './components/Scanner';
@@ -67,6 +68,7 @@ export default function App() {
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const [isSubscriptionModalOpen, setIsSubscriptionModalOpen] = useState(false);
   const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [isSigningIn, setIsSigningIn] = useState(false);
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [profile, setProfile] = useState<UserProfile | null>(null);
@@ -97,6 +99,10 @@ export default function App() {
         origin: { y: 0.5 }
       });
       // Clear the query param
+      window.history.replaceState({}, document.title, "/");
+    } else if (urlParams.get('payment') === 'failed') {
+      setError("Pembayaran tidak berjaya atau telah dibatalkan. Sila cuba lagi.");
+      setIsSubscriptionModalOpen(true);
       window.history.replaceState({}, document.title, "/");
     }
 
@@ -380,6 +386,23 @@ export default function App() {
     }
   }, [parcels, user]);
 
+  const handleSignIn = async () => {
+    if (isSigningIn) return;
+    setIsSigningIn(true);
+    setError(null);
+    try {
+      await signInWithGoogle();
+    } catch (err: any) {
+      console.error("Sign in error:", err);
+      // Ignore cancelled popup request as it's usually user-initiated or a double-click
+      if (err.code !== 'auth/cancelled-popup-request') {
+        setError(`Ralat log masuk: ${err.message}`);
+      }
+    } finally {
+      setIsSigningIn(false);
+    }
+  };
+
   const handleSaveProfile = async () => {
     if (!user) return;
     if (!riderName.trim()) {
@@ -570,6 +593,21 @@ export default function App() {
     return matchesSearch && matchesStatus && matchesCOD && matchesGroup;
   });
 
+  if (isAuthLoading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+        <div className="flex flex-col items-center gap-4">
+          <RefreshCw className="animate-spin text-blue-600" size={40} />
+          <p className="text-gray-500 font-bold animate-pulse">Memuatkan RouteKing...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <LandingPage onStart={handleSignIn} isLoggingIn={isSigningIn} />;
+  }
+
   return (
     <div className="min-h-screen bg-gray-50 pb-32">
       {/* Header */}
@@ -630,33 +668,7 @@ export default function App() {
           </div>
         )}
 
-        {isAuthLoading ? (
-          <div className="flex flex-col items-center justify-center py-20 gap-4">
-            <RefreshCw className="animate-spin text-blue-600" size={40} />
-            <p className="text-gray-500 font-medium">Memuatkan akaun...</p>
-          </div>
-        ) : !user ? (
-          <div className="flex flex-col items-center justify-center py-12 px-6 bg-white rounded-3xl shadow-xl border-2 border-gray-50 text-center gap-6 animate-in fade-in zoom-in duration-500">
-            <div className="w-24 h-24 bg-blue-100 rounded-full flex items-center justify-center text-blue-600">
-              <Package size={48} />
-            </div>
-            <div className="space-y-2">
-              <h2 className="text-2xl font-black text-gray-800">Selamat Datang!</h2>
-              <p className="text-gray-500">Log masuk dengan Google untuk mula menyusun parcel. Akaun anda akan didaftarkan secara automatik.</p>
-            </div>
-            <button
-              onClick={signInWithGoogle}
-              className="w-full flex items-center justify-center gap-3 bg-white border-2 border-gray-200 hover:border-blue-500 hover:bg-blue-50 text-gray-700 font-bold py-4 px-6 rounded-2xl transition-all active:scale-95 shadow-sm"
-            >
-              <img src="https://www.google.com/favicon.ico" alt="Google" className="w-5 h-5" />
-              Log Masuk dengan Google
-            </button>
-            <p className="text-[10px] text-gray-400 uppercase tracking-widest font-bold">Pendaftaran adalah Percuma & Automatik</p>
-          </div>
-        ) : (
-          <>
-            {/* Stats Section */}
-            <Stats parcels={parcels} />
+        <Stats parcels={parcels} />
 
             {/* Search & Actions */}
             <div className="space-y-3">
@@ -1408,9 +1420,7 @@ export default function App() {
               </motion.div>
             </div>
           )}
-        </>
-      )}
-    </main>
+      </main>
 
       {/* Bottom Nav Hint */}
       <div className="fixed bottom-0 inset-x-0 bg-white/80 backdrop-blur-md border-t py-2 px-4 flex justify-center pointer-events-none">
@@ -1475,7 +1485,10 @@ export default function App() {
                         <ArrowRight size={24} />
                       </a>
                       <button 
-                        onClick={() => setPaymentUrl(null)}
+                        onClick={() => {
+                          setPaymentUrl(null);
+                          setError(null);
+                        }}
                         className="w-full py-2 text-gray-400 font-bold text-xs hover:text-gray-600"
                       >
                         Pilih Pakej Lain
@@ -1483,7 +1496,14 @@ export default function App() {
                     </div>
                   ) : (
                     <div className="space-y-3 pt-4">
-                      <div className="p-6 bg-blue-50 rounded-3xl border-2 border-blue-100 text-left relative overflow-hidden group hover:border-blue-300 transition-all cursor-pointer" onClick={() => handleRealPayment('monthly')}>
+                      <button 
+                        disabled={isSavingProfile}
+                        className={cn(
+                          "w-full p-6 bg-blue-50 rounded-3xl border-2 border-blue-100 text-left relative overflow-hidden group hover:border-blue-300 transition-all disabled:opacity-50",
+                          isSavingProfile && "cursor-not-allowed"
+                        )} 
+                        onClick={() => handleRealPayment('monthly')}
+                      >
                         <div className="flex justify-between items-center mb-1">
                           <span className="font-black text-blue-900">Bulanan</span>
                           <span className="bg-blue-600 text-white text-[10px] font-bold px-2 py-1 rounded-full">POPULAR</span>
@@ -1493,9 +1513,21 @@ export default function App() {
                           <span className="text-xs text-blue-400 font-bold">/ bulan</span>
                         </div>
                         <p className="text-[10px] text-blue-400 mt-2 font-bold uppercase tracking-widest">Akses Penuh • Tanpa Had</p>
-                      </div>
+                        {isSavingProfile && (
+                          <div className="absolute inset-0 bg-blue-50/50 flex items-center justify-center">
+                            <RefreshCw className="animate-spin text-blue-600" size={24} />
+                          </div>
+                        )}
+                      </button>
 
-                      <div className="p-6 bg-gray-50 rounded-3xl border-2 border-gray-100 text-left relative overflow-hidden group hover:border-blue-200 transition-all cursor-pointer" onClick={() => handleRealPayment('yearly')}>
+                      <button 
+                        disabled={isSavingProfile}
+                        className={cn(
+                          "w-full p-6 bg-gray-50 rounded-3xl border-2 border-gray-100 text-left relative overflow-hidden group hover:border-blue-200 transition-all disabled:opacity-50",
+                          isSavingProfile && "cursor-not-allowed"
+                        )} 
+                        onClick={() => handleRealPayment('yearly')}
+                      >
                         <div className="flex justify-between items-center mb-1">
                           <span className="font-black text-gray-900">Tahunan</span>
                           <span className="bg-green-500 text-white text-[10px] font-bold px-2 py-1 rounded-full">JIMAT RM30</span>
@@ -1505,7 +1537,12 @@ export default function App() {
                           <span className="text-xs text-gray-400 font-bold">/ tahun</span>
                         </div>
                         <p className="text-[10px] text-gray-400 mt-2 font-bold uppercase tracking-widest">Akses Penuh • 12 Bulan</p>
-                      </div>
+                        {isSavingProfile && (
+                          <div className="absolute inset-0 bg-gray-50/50 flex items-center justify-center">
+                            <RefreshCw className="animate-spin text-gray-600" size={24} />
+                          </div>
+                        )}
+                      </button>
                     </div>
                   )}
 

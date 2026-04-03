@@ -71,7 +71,7 @@ async function startServer() {
       formData.append('billAmount', amount.toString());
       formData.append('billReturnUrl', `${APP_URL}/api/payment/return`);
       formData.append('billCallbackUrl', `${APP_URL}/api/payment/callback`);
-      formData.append('billExternalReferenceNo', `${uid}_${Date.now()}`);
+      formData.append('billExternalReferenceNo', `${uid}_${type}_${Date.now()}`);
       formData.append('billTo', name || 'Rider');
       formData.append('billEmail', email);
       formData.append('billPhone', phone || '0123456789');
@@ -104,28 +104,39 @@ async function startServer() {
   app.post("/api/payment/callback", async (req, res) => {
     const { refno, status, reason, billcode, order_id } = req.body;
     
+    console.log("ToyyibPay Callback Received:", { refno, status, reason, billcode });
+
     // ToyyibPay status: 1 = Success, 2 = Pending, 3 = Failed
-    if (status === '1') {
-      const uid = refno.split('_')[0];
-      const type = refno.includes('Monthly') ? 'monthly' : 'yearly'; // This is a bit hacky, better use metadata if possible
-      // Actually we don't have the type in refno easily unless we put it there.
-      // Let's assume we can derive it or just check the amount if needed.
+    if (status === '1' && refno) {
+      const parts = refno.split('_');
+      const uid = parts[0];
+      const type = parts[1]; // 'monthly' or 'yearly'
       
       const now = Date.now();
-      // We'll just check the bill name or amount if we had it, but for now let's just use a default or look up the bill
-      // For simplicity, let's assume monthly if not specified
-      const duration = 30 * 24 * 60 * 60 * 1000; 
+      let expiryDate = now;
+
+      if (type === 'yearly') {
+        // 1 year + 1 day buffer
+        expiryDate = now + (366 * 24 * 60 * 60 * 1000);
+      } else {
+        // 30 days + 1 day buffer
+        expiryDate = now + (31 * 24 * 60 * 60 * 1000);
+      }
 
       try {
-        await db.collection('profiles').doc(uid).update({
+        // Update Firestore
+        await db.collection('profiles').doc(uid).set({
           isPro: true,
-          expiryDate: now + duration,
+          expiryDate: expiryDate,
           lastPaymentDate: now,
-          lastBillCode: billcode
-        });
-        console.log(`Successfully updated subscription for user ${uid}`);
+          lastBillCode: billcode,
+          subscriptionType: type,
+          updatedAt: now
+        }, { merge: true });
+        
+        console.log(`Successfully updated subscription for user ${uid} (${type})`);
       } catch (error) {
-        console.error("Firestore Update Error:", error);
+        console.error("Firestore Update Error in Callback:", error);
       }
     }
 
