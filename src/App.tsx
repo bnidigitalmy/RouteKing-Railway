@@ -4,6 +4,7 @@ import { LandingPage } from './components/LandingPage';
 import { Plus, MapPin, Navigation, Trash2, RefreshCw, Package, ArrowRight, Camera, Search, LayoutGrid, List, Map, Filter, Folder, MoreVertical, LogOut, LogIn, AlertCircle, X, Edit2, User as UserIcon, CheckCircle2, Copy, Share2 } from 'lucide-react';
 import { Parcel, UserProfile } from './types';
 import { Scanner } from './components/Scanner';
+import { LegalModal } from './components/LegalModal';
 import { ParcelCard } from './components/ParcelCard';
 import { Stats } from './components/Stats';
 import { MapPreview } from './components/MapPreview';
@@ -66,6 +67,10 @@ export default function App() {
   const [isClearDeliveredModalOpen, setIsClearDeliveredModalOpen] = useState(false);
   const [isMarkingModeOpen, setIsMarkingModeOpen] = useState(false);
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
+  const [legalModal, setLegalModal] = useState<{ isOpen: boolean; type: 'privacy' | 'terms' }>({
+    isOpen: false,
+    type: 'privacy'
+  });
   const [isSubscriptionModalOpen, setIsSubscriptionModalOpen] = useState(false);
   const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [isSigningIn, setIsSigningIn] = useState(false);
@@ -610,6 +615,12 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-gray-50 pb-32">
+      {/* Legal Modal */}
+      <LegalModal 
+        isOpen={legalModal.isOpen} 
+        onClose={() => setLegalModal({ ...legalModal, isOpen: false })} 
+        type={legalModal.type} 
+      />
       {/* Header */}
       <header className="bg-white border-b sticky top-0 z-30 px-4 py-4 shadow-sm">
         <div className="max-w-md mx-auto flex items-center justify-between">
@@ -1415,6 +1426,21 @@ export default function App() {
                         'Simpan Profile'
                       )}
                     </button>
+
+                    <div className="flex justify-center gap-4 pt-4 border-t border-gray-100">
+                      <button 
+                        onClick={() => setLegalModal({ isOpen: true, type: 'privacy' })}
+                        className="text-[10px] font-black text-gray-400 uppercase tracking-widest hover:text-blue-600 transition-colors"
+                      >
+                        Dasar Privasi
+                      </button>
+                      <button 
+                        onClick={() => setLegalModal({ isOpen: true, type: 'terms' })}
+                        className="text-[10px] font-black text-gray-400 uppercase tracking-widest hover:text-blue-600 transition-colors"
+                      >
+                        Terma & Syarat
+                      </button>
+                    </div>
                   </div>
                 </div>
               </motion.div>

@@ -1,4 +1,5 @@
 import { Parcel } from "../types";
+import { withRetry } from "./utils";
 
 /**
  * Fallback: Simple Nearest Neighbor Algorithm (Straight-line distance)
@@ -61,18 +62,23 @@ export async function optimizeRoute(parcels: Parcel[], startPoint: { lat: number
       ...parcels.map(p => `${p.lng},${p.lat}`)
     ].join(';');
 
-    // Call OSRM Trip API
-    // source=first: Start at the current location
-    // roundtrip=false: Don't force returning to the start point
-    const response = await fetch(`https://router.project-osrm.org/trip/v1/driving/${coords}?source=first&roundtrip=false`);
-    
-    if (!response.ok) throw new Error('OSRM API failed');
-    
-    const data = await response.json();
-    
-    if (data.code !== 'Ok' || !data.waypoints) {
-      throw new Error('Invalid OSRM response');
-    }
+    // Call OSRM Trip API with retry
+    const data = await withRetry(async () => {
+      const response = await fetch(`https://router.project-osrm.org/trip/v1/driving/${coords}?source=first&roundtrip=false`);
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`OSRM API failed (${response.status}): ${errorText}`);
+      }
+      
+      const json = await response.json();
+      
+      if (json.code !== 'Ok' || !json.waypoints) {
+        throw new Error(`Invalid OSRM response: ${json.code}`);
+      }
+      
+      return json;
+    }, { maxRetries: 2, initialDelay: 2000 });
 
     // Create an array to hold the sorted parcels
     const optimized: Parcel[] = new Array(parcels.length);

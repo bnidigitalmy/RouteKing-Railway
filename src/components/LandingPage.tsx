@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { motion } from 'motion/react';
+import { LegalModal } from './LegalModal';
 import { 
   MapPin, 
   Zap, 
@@ -29,8 +30,23 @@ interface LandingPageProps {
 }
 
 export const LandingPage: React.FC<LandingPageProps> = ({ onStart, isLoggingIn }) => {
+  const [legalModal, setLegalModal] = useState<{ isOpen: boolean; type: 'privacy' | 'terms' }>({
+    isOpen: false,
+    type: 'privacy'
+  });
+
+  const openLegal = (type: 'privacy' | 'terms') => {
+    setLegalModal({ isOpen: true, type });
+  };
+
   return (
     <div className="min-h-screen bg-white text-gray-900 font-sans selection:bg-blue-100 selection:text-blue-900">
+      {/* Legal Modal */}
+      <LegalModal 
+        isOpen={legalModal.isOpen} 
+        onClose={() => setLegalModal({ ...legalModal, isOpen: false })} 
+        type={legalModal.type} 
+      />
       {/* Navigation */}
       <nav className="fixed top-0 left-0 right-0 z-50 bg-white/80 backdrop-blur-md border-b border-gray-100">
         <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
@@ -497,8 +513,18 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart, isLoggingIn }
           </div>
           <p className="text-gray-400 text-sm font-medium">© 2026 RouteKing Malaysia. Hak Cipta Terpelihara.</p>
           <div className="flex gap-6">
-            <a href="#" className="text-gray-400 hover:text-gray-900 text-sm font-bold">Privasi</a>
-            <a href="#" className="text-gray-400 hover:text-gray-900 text-sm font-bold">Terma</a>
+            <button 
+              onClick={() => openLegal('privacy')}
+              className="text-gray-400 hover:text-gray-900 text-sm font-bold transition-colors"
+            >
+              Privasi
+            </button>
+            <button 
+              onClick={() => openLegal('terms')}
+              className="text-gray-400 hover:text-gray-900 text-sm font-bold transition-colors"
+            >
+              Terma
+            </button>
           </div>
         </div>
       </footer>

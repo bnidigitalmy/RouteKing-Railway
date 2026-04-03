@@ -1,5 +1,6 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { db, doc, getDoc, setDoc, handleFirestoreError, OperationType } from "../firebase";
+import { withRetry } from "./utils";
 
 // Helper to create a safe document ID from an address
 function hashAddress(address: string): string {
@@ -33,73 +34,75 @@ export async function extractParcelInfo(base64Image: string) {
   const mimeType = base64Image.split(';')[0].split(':')[1] || "image/jpeg";
   const base64Data = base64Image.split(',')[1];
 
-  try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3.1-flash-lite-preview",
-      contents: [
-        {
-          parts: [
-            {
-              text: `You are a courier assistant in Malaysia. Extract the recipient's name, phone number, delivery address and tracking number from this shipping label (AWB). 
-              Rules:
-              1. The name should be the RECIPIENT'S name (Penerima).
-              2. The phone number should be the RECIPIENT'S phone number (usually starts with 01 or 601).
-              3. The address should be the RECIPIENT'S address.
-              4. Include the full address including Postcode, City, and State.
-              5. The tracking number is usually a long alphanumeric string (e.g., JNT123, SPX123, MY123).
-              6. Return ONLY a JSON object.`,
-            },
-            {
-              inlineData: {
-                data: base64Data,
-                mimeType: mimeType,
+  return withRetry(async () => {
+    try {
+      const response = await ai.models.generateContent({
+        model: "gemini-3.1-flash-lite-preview",
+        contents: [
+          {
+            parts: [
+              {
+                text: `You are a courier assistant in Malaysia. Extract the recipient's name, phone number, delivery address and tracking number from this shipping label (AWB). 
+                Rules:
+                1. The name should be the RECIPIENT'S name (Penerima).
+                2. The phone number should be the RECIPIENT'S phone number (usually starts with 01 or 601).
+                3. The address should be the RECIPIENT'S address.
+                4. Include the full address including Postcode, City, and State.
+                5. The tracking number is usually a long alphanumeric string (e.g., JNT123, SPX123, MY123).
+                6. Return ONLY a JSON object.`,
+              },
+              {
+                inlineData: {
+                  data: base64Data,
+                  mimeType: mimeType,
+                },
+              },
+            ],
+          },
+        ],
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              recipientName: {
+                type: Type.STRING,
+                description: "Recipient's full name"
+              },
+              recipientPhone: {
+                type: Type.STRING,
+                description: "Recipient's phone number"
+              },
+              address: { 
+                type: Type.STRING,
+                description: "Full recipient delivery address"
+              },
+              trackingNumber: { 
+                type: Type.STRING,
+                description: "Courier tracking number"
               },
             },
-          ],
-        },
-      ],
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            recipientName: {
-              type: Type.STRING,
-              description: "Recipient's full name"
-            },
-            recipientPhone: {
-              type: Type.STRING,
-              description: "Recipient's phone number"
-            },
-            address: { 
-              type: Type.STRING,
-              description: "Full recipient delivery address"
-            },
-            trackingNumber: { 
-              type: Type.STRING,
-              description: "Courier tracking number"
-            },
+            required: ["recipientName", "address", "trackingNumber"],
           },
-          required: ["recipientName", "address", "trackingNumber"],
         },
-      },
-    });
+      });
 
-    if (!response.text) {
-      throw new Error("Tiada teks dikesan dalam gambar.");
-    }
+      if (!response.text) {
+        throw new Error("Tiada teks dikesan dalam gambar.");
+      }
 
-    return JSON.parse(response.text);
-  } catch (error: any) {
-    console.error("Gemini OCR Error:", error);
-    
-    // Handle Quota Exceeded (429) specifically
-    if (error?.message?.includes("429") || error?.message?.includes("RESOURCE_EXHAUSTED") || error?.message?.includes("quota")) {
-      throw new Error("Had penggunaan (Quota) Gemini anda telah tamat atau terlalu laju. Sila tunggu sebentar atau semak baki kredit di Google AI Studio.");
+      return JSON.parse(response.text);
+    } catch (error: any) {
+      console.error("Gemini OCR Error:", error);
+      
+      // Handle Quota Exceeded (429) specifically
+      if (error?.message?.includes("429") || error?.message?.includes("RESOURCE_EXHAUSTED") || error?.message?.includes("quota")) {
+        throw new Error("Had penggunaan (Quota) Gemini anda telah tamat atau terlalu laju. Sila tunggu sebentar atau semak baki kredit di Google AI Studio.");
+      }
+      
+      throw error;
     }
-    
-    throw error;
-  }
+  }, { maxRetries: 2, initialDelay: 2000 });
 }
 
 // Real geocoding using Google Maps Geocoding API with Firestore Caching
@@ -121,50 +124,16 @@ export async function getCoordinates(address: string) {
 
   let result: { lat: number, lng: number } | null = null;
 
-  // Use custom global injected by Vite
-  // @ts-ignore
-  let googleMapsKey = typeof __GOOGLE_MAPS_API_KEY__ !== 'undefined' ? __GOOGLE_MAPS_API_KEY__ : '';
-  
-  if (!googleMapsKey || googleMapsKey === "undefined") {
-    googleMapsKey = (import.meta as any).env.VITE_GOOGLE_MAPS_API_KEY || "";
-  }
+  // 2. Try OpenStreetMap (OSM) first - it's FREE!
+  try {
+    let cleanAddress = address
+      .replace(/No\./gi, '')
+      .replace(/Jalan/gi, 'Jln')
+      .trim();
 
-  if (googleMapsKey) {
-    try {
-      const query = encodeURIComponent(address);
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 8000);
-      
-      const response = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?address=${query}&components=country:MY&key=${googleMapsKey}`, {
-        signal: controller.signal
-      });
-      clearTimeout(timeoutId);
-      const data = await response.json();
-
-      if (data.status === 'OK' && data.results.length > 0) {
-        result = {
-          lat: data.results[0].geometry.location.lat,
-          lng: data.results[0].geometry.location.lng,
-        };
-      } else {
-        console.warn("Google Maps Geocoding API error:", data.status, data.error_message);
-      }
-    } catch (error) {
-      console.error("Google Maps Geocoding error:", error);
-    }
-  } else {
-    console.warn("GOOGLE_MAPS_API_KEY tidak dijumpai. Sila masukkan dalam menu Secrets. Menggunakan OpenStreetMap sebagai ganti sementara.");
-  }
-
-  // Fallback to OpenStreetMap if Google Maps fails or key is missing
-  if (!result) {
-    try {
-      let cleanAddress = address
-        .replace(/No\./gi, '')
-        .replace(/Jalan/gi, 'Jln')
-        .trim();
-
-      const query = encodeURIComponent(cleanAddress);
+    const query = encodeURIComponent(cleanAddress);
+    
+    result = await withRetry(async () => {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 8000);
       
@@ -179,13 +148,58 @@ export async function getCoordinates(address: string) {
       const data = await response.json();
 
       if (data && data.length > 0) {
-        result = {
+        console.log("OSM Geocoding success for:", address);
+        return {
           lat: parseFloat(data[0].lat),
           lng: parseFloat(data[0].lon),
         };
       }
-    } catch (error) {
-      console.error("OSM Geocoding error:", error);
+      return null;
+    }, { maxRetries: 2, initialDelay: 1500 });
+  } catch (error) {
+    console.error("OSM Geocoding error:", error);
+  }
+
+  // 3. Fallback to Google Maps only if OSM fails and key is available
+  if (!result) {
+    // Use custom global injected by Vite
+    // @ts-ignore
+    let googleMapsKey = typeof __GOOGLE_MAPS_API_KEY__ !== 'undefined' ? __GOOGLE_MAPS_API_KEY__ : '';
+    
+    if (!googleMapsKey || googleMapsKey === "undefined") {
+      googleMapsKey = (import.meta as any).env.VITE_GOOGLE_MAPS_API_KEY || "";
+    }
+
+    if (googleMapsKey) {
+      try {
+        console.log("OSM failed, falling back to Google Maps for:", address);
+        const query = encodeURIComponent(address);
+        
+        result = await withRetry(async () => {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 8000);
+          
+          const response = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?address=${query}&components=country:MY&key=${googleMapsKey}`, {
+            signal: controller.signal
+          });
+          clearTimeout(timeoutId);
+          const data = await response.json();
+
+          if (data.status === 'OK' && data.results.length > 0) {
+            return {
+              lat: data.results[0].geometry.location.lat,
+              lng: data.results[0].geometry.location.lng,
+            };
+          } else if (data.status === 'OVER_QUERY_LIMIT' || data.status === 'REQUEST_DENIED') {
+            throw new Error(`Google Maps API error: ${data.status}`);
+          } else {
+            console.warn("Google Maps Geocoding API error:", data.status, data.error_message);
+            return null;
+          }
+        }, { maxRetries: 2 });
+      } catch (error) {
+        console.error("Google Maps Geocoding error:", error);
+      }
     }
   }
 
