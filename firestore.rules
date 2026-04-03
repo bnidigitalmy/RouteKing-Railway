@@ -30,6 +30,10 @@
 //   - uid: string (required, must match owner)
 //   - riderName: string (required)
 //   - courierCompany: string (required)
+//   - isPro: boolean (optional)
+//   - trialStartedAt: number (optional)
+//   - expiryDate: number (optional)
+//   - subscriptionType: string (optional)
 //
 // Collection: geocache
 // Fields:
@@ -84,7 +88,11 @@ service cloud.firestore {
       return data.keys().hasAll(['uid', 'riderName', 'courierCompany']) &&
              data.uid == request.auth.uid &&
              data.riderName is string && data.riderName.size() < 100 &&
-             data.courierCompany is string && data.courierCompany.size() < 100;
+             data.courierCompany is string && data.courierCompany.size() < 100 &&
+             (!('isPro' in data) || data.isPro is bool) &&
+             (!('trialStartedAt' in data) || data.trialStartedAt is number) &&
+             (!('expiryDate' in data) || data.expiryDate is number) &&
+             (!('subscriptionType' in data) || data.subscriptionType is string);
     }
 
     // ===============================================================

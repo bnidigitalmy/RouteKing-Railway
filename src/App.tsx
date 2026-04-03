@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import axios from 'axios';
 import { Plus, MapPin, Navigation, Trash2, RefreshCw, Package, ArrowRight, Camera, Search, LayoutGrid, List, Map, Filter, Folder, MoreVertical, LogOut, LogIn, AlertCircle, X, Edit2, User as UserIcon, CheckCircle2, Copy, Share2 } from 'lucide-react';
 import { Parcel, UserProfile } from './types';
 import { Scanner } from './components/Scanner';
@@ -64,6 +65,7 @@ export default function App() {
   const [isClearDeliveredModalOpen, setIsClearDeliveredModalOpen] = useState(false);
   const [isMarkingModeOpen, setIsMarkingModeOpen] = useState(false);
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
+  const [isSubscriptionModalOpen, setIsSubscriptionModalOpen] = useState(false);
   const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
@@ -71,6 +73,7 @@ export default function App() {
   const [riderName, setRiderName] = useState('');
   const [courierCompany, setCourierCompany] = useState('Shopee Express (SPX)');
   const [error, setError] = useState<string | null>(null);
+  const [paymentUrl, setPaymentUrl] = useState<string | null>(null);
 
   // Default start point (Hub)
   const [startPoint, setStartPoint] = useState({ lat: 3.1390, lng: 101.6869 });
@@ -79,8 +82,23 @@ export default function App() {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
+      if (currentUser && !riderName) {
+        setRiderName(currentUser.displayName || '');
+      }
       setIsAuthLoading(false);
     });
+
+    // Check for payment status in URL
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('payment') === 'success') {
+      confetti({
+        particleCount: 150,
+        spread: 100,
+        origin: { y: 0.5 }
+      });
+      // Clear the query param
+      window.history.replaceState({}, document.title, "/");
+    }
 
     // Get current location on mount
     if (navigator.geolocation) {
@@ -135,6 +153,34 @@ export default function App() {
         setProfile(data);
         setRiderName(data.riderName);
         setCourierCompany(data.courierCompany);
+
+        // Check subscription status
+        const now = Date.now();
+        const trialDays = 7;
+        const trialMs = trialDays * 24 * 60 * 60 * 1000;
+        
+        // If trialStartedAt is missing (old user), initialize it
+        if (!data.trialStartedAt) {
+          updateDoc(doc(db, 'profiles', user.uid), { 
+            trialStartedAt: now,
+            isPro: data.isPro || false 
+          });
+          return;
+        }
+
+        const testers = ['syabanizainon83@gmail.com', 'bniresources2@gmail.com'];
+        const isTester = testers.includes(user.email || '');
+        const trialExpired = (now - data.trialStartedAt > trialMs) || isTester;
+        const subscriptionActive = data.isPro && data.expiryDate && now < data.expiryDate;
+        
+        if (!subscriptionActive && trialExpired) {
+          setIsSubscriptionModalOpen(true);
+        } else {
+          setIsSubscriptionModalOpen(false);
+        }
+      } else {
+        // New user - prompt for profile setup
+        setIsProfileModalOpen(true);
       }
     }, (error) => {
       console.error("Firestore Error (Profile):", error);
@@ -345,11 +391,19 @@ export default function App() {
     setError(null);
     
     try {
-      await setDoc(doc(db, 'profiles', user.uid), {
+      const profileData: any = {
         uid: user.uid,
         riderName: riderName.trim(),
         courierCompany: courierCompany.trim()
-      });
+      };
+
+      // Initialize trial for brand new profiles
+      if (!profile) {
+        profileData.trialStartedAt = Date.now();
+        profileData.isPro = false;
+      }
+
+      await setDoc(doc(db, 'profiles', user.uid), profileData, { merge: true });
       
       // Trigger success feedback
       setSaveSuccess(true);
@@ -370,6 +424,35 @@ export default function App() {
       const errorMessage = e instanceof Error ? e.message : "Gagal menyimpan profile.";
       setError(errorMessage);
       console.error("Profile Save Error:", e);
+    }
+  };
+
+  const handleRealPayment = async (type: 'monthly' | 'yearly') => {
+    if (!user) return;
+    setIsSavingProfile(true);
+    setError(null);
+    setPaymentUrl(null);
+    try {
+      const response = await axios.post('/api/payment/create', {
+        uid: user.uid,
+        email: user.email,
+        name: riderName || user.displayName,
+        type: type
+      });
+      
+      if (response.data.paymentUrl) {
+        setPaymentUrl(response.data.paymentUrl);
+        // Try to open automatically, but the button will be there as fallback
+        window.open(response.data.paymentUrl, '_blank');
+      } else {
+        throw new Error("Payment URL not found");
+      }
+    } catch (err: any) {
+      console.error("Payment creation failed:", err);
+      const msg = err.response?.data?.error || err.message || "Gagal memulakan pembayaran";
+      setError(`Ralat: ${msg}. Sila pastikan kunci API ToyyibPay telah dikonfigurasi di Settings.`);
+    } finally {
+      setIsSavingProfile(false);
     }
   };
 
@@ -559,7 +642,7 @@ export default function App() {
             </div>
             <div className="space-y-2">
               <h2 className="text-2xl font-black text-gray-800">Selamat Datang!</h2>
-              <p className="text-gray-500">Sila log masuk untuk mula menyusun parcel dan simpan data anda dengan selamat.</p>
+              <p className="text-gray-500">Log masuk dengan Google untuk mula menyusun parcel. Akaun anda akan didaftarkan secara automatik.</p>
             </div>
             <button
               onClick={signInWithGoogle}
@@ -568,7 +651,7 @@ export default function App() {
               <img src="https://www.google.com/favicon.ico" alt="Google" className="w-5 h-5" />
               Log Masuk dengan Google
             </button>
-            <p className="text-xs text-gray-400">Dengan log masuk, anda bersetuju dengan terma dan syarat kami.</p>
+            <p className="text-[10px] text-gray-400 uppercase tracking-widest font-bold">Pendaftaran adalah Percuma & Automatik</p>
           </div>
         ) : (
           <>
@@ -1271,6 +1354,33 @@ export default function App() {
                       </p>
                     </div>
 
+                    {profile && (
+                      <div className="p-5 bg-gray-50 rounded-[1.5rem] border border-gray-100 space-y-3">
+                        <div className="flex justify-between items-center">
+                          <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Status Akaun</span>
+                          {profile.isPro ? (
+                            <span className="bg-green-100 text-green-700 text-[10px] font-black px-2 py-1 rounded-full uppercase tracking-tighter">PRO ACTIVE</span>
+                          ) : (
+                            <span className="bg-blue-100 text-blue-700 text-[10px] font-black px-2 py-1 rounded-full uppercase tracking-tighter">FREE TRIAL</span>
+                          )}
+                        </div>
+                        {profile.expiryDate && (
+                          <div className="flex justify-between items-center">
+                            <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Tamat Pada</span>
+                            <span className="text-xs font-bold text-gray-700">{new Date(profile.expiryDate).toLocaleDateString('ms-MY')}</span>
+                          </div>
+                        )}
+                        {!profile.isPro && profile.trialStartedAt && (
+                          <div className="flex justify-between items-center">
+                            <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Trial Tamat</span>
+                            <span className="text-xs font-bold text-gray-700">
+                              {new Date(profile.trialStartedAt + 7 * 24 * 60 * 60 * 1000).toLocaleDateString('ms-MY')}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
                     <button 
                       onClick={handleSaveProfile}
                       disabled={isSavingProfile || saveSuccess}
@@ -1308,6 +1418,134 @@ export default function App() {
           RouteKing v1.0 • Built for Drivers
         </p>
       </div>
+
+      {/* Subscription Modal */}
+      {isSubscriptionModalOpen && (
+        <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-md">
+          <motion.div 
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            className="bg-white w-full max-w-md rounded-[2.5rem] p-8 shadow-2xl relative overflow-hidden"
+          >
+            <div className="absolute top-0 right-0 -mr-12 -mt-12 w-40 h-40 bg-blue-50 rounded-full" />
+            
+            <div className="relative z-10 text-center space-y-6">
+              {isSavingProfile ? (
+                <div className="py-20 flex flex-col items-center justify-center space-y-4">
+                  <RefreshCw className="animate-spin text-blue-600" size={48} />
+                  <p className="font-bold text-gray-600">Menghubungi ToyyibPay...</p>
+                  <p className="text-xs text-gray-400">Sila tunggu sebentar sementara kami menyediakan invois anda.</p>
+                </div>
+              ) : (
+                <>
+                  <div className="w-20 h-20 bg-blue-100 rounded-full flex items-center justify-center mx-auto text-blue-600">
+                    <AlertCircle size={40} />
+                  </div>
+                  
+                  <div className="space-y-2">
+                    <h3 className="font-black text-2xl text-gray-900 tracking-tight">Masa Percubaan Tamat</h3>
+                    <p className="text-gray-600 leading-relaxed">
+                      Tempoh percubaan 7 hari anda telah tamat. Langgan sekarang untuk terus menggunakan RouteKing.
+                    </p>
+                  </div>
+
+                  {error && (
+                    <div className="p-4 bg-red-50 border border-red-100 rounded-2xl flex items-center gap-3 text-red-600 text-sm font-bold">
+                      <AlertCircle size={18} />
+                      <p>{error}</p>
+                    </div>
+                  )}
+
+                  {paymentUrl ? (
+                    <div className="space-y-4 py-6">
+                      <div className="p-6 bg-green-50 border-2 border-green-100 rounded-[2rem] text-center space-y-3">
+                        <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto text-green-600">
+                          <CheckCircle2 size={32} />
+                        </div>
+                        <p className="font-bold text-green-800">Invois Sedia!</p>
+                        <p className="text-xs text-green-600">Sila klik butang di bawah untuk ke portal pembayaran ToyyibPay.</p>
+                      </div>
+                      <a 
+                        href={paymentUrl} 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="w-full py-5 bg-blue-600 hover:bg-blue-700 text-white font-black rounded-2xl shadow-xl shadow-blue-100 flex items-center justify-center gap-3 text-lg transition-all active:scale-95"
+                      >
+                        Bayar Sekarang
+                        <ArrowRight size={24} />
+                      </a>
+                      <button 
+                        onClick={() => setPaymentUrl(null)}
+                        className="w-full py-2 text-gray-400 font-bold text-xs hover:text-gray-600"
+                      >
+                        Pilih Pakej Lain
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="space-y-3 pt-4">
+                      <div className="p-6 bg-blue-50 rounded-3xl border-2 border-blue-100 text-left relative overflow-hidden group hover:border-blue-300 transition-all cursor-pointer" onClick={() => handleRealPayment('monthly')}>
+                        <div className="flex justify-between items-center mb-1">
+                          <span className="font-black text-blue-900">Bulanan</span>
+                          <span className="bg-blue-600 text-white text-[10px] font-bold px-2 py-1 rounded-full">POPULAR</span>
+                        </div>
+                        <div className="flex items-baseline gap-1">
+                          <span className="text-2xl font-black text-blue-600">RM9.90</span>
+                          <span className="text-xs text-blue-400 font-bold">/ bulan</span>
+                        </div>
+                        <p className="text-[10px] text-blue-400 mt-2 font-bold uppercase tracking-widest">Akses Penuh • Tanpa Had</p>
+                      </div>
+
+                      <div className="p-6 bg-gray-50 rounded-3xl border-2 border-gray-100 text-left relative overflow-hidden group hover:border-blue-200 transition-all cursor-pointer" onClick={() => handleRealPayment('yearly')}>
+                        <div className="flex justify-between items-center mb-1">
+                          <span className="font-black text-gray-900">Tahunan</span>
+                          <span className="bg-green-500 text-white text-[10px] font-bold px-2 py-1 rounded-full">JIMAT RM30</span>
+                        </div>
+                        <div className="flex items-baseline gap-1">
+                          <span className="text-2xl font-black text-gray-800">RM89.00</span>
+                          <span className="text-xs text-gray-400 font-bold">/ tahun</span>
+                        </div>
+                        <p className="text-[10px] text-gray-400 mt-2 font-bold uppercase tracking-widest">Akses Penuh • 12 Bulan</p>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="pt-4">
+                    <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest mb-4">Pilih Kaedah Pembayaran</p>
+                    <div className="flex justify-center gap-6 items-center bg-white/50 p-4 rounded-2xl border border-gray-100">
+                      <img 
+                        src="https://toyyibpay.com/assets/img/logo.png" 
+                        alt="ToyyibPay" 
+                        className="h-6 object-contain" 
+                        referrerPolicy="no-referrer" 
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).src = 'https://placehold.co/120x40?text=ToyyibPay';
+                        }}
+                      />
+                      <div className="w-px h-6 bg-gray-200"></div>
+                      <img 
+                        src="https://www.paynet.my/images/fpx-logo.png" 
+                        alt="FPX" 
+                        className="h-6 object-contain" 
+                        referrerPolicy="no-referrer"
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).src = 'https://placehold.co/80x40?text=FPX';
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  <button 
+                    onClick={logout}
+                    className="w-full py-4 text-gray-400 font-bold text-sm hover:text-gray-600 transition-colors"
+                  >
+                    Log Keluar
+                  </button>
+                </>
+              )}
+            </div>
+          </motion.div>
+        </div>
+      )}
     </div>
   );
 }

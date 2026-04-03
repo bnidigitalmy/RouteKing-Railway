@@ -21,6 +21,10 @@ export interface UserProfile {
   uid: string;
   riderName: string;
   courierCompany: string;
+  isPro?: boolean;
+  trialStartedAt?: number;
+  expiryDate?: number;
+  subscriptionType?: 'monthly' | 'yearly';
 }
 
 export interface OptimizationResult {
