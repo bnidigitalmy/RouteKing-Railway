@@ -1,18 +1,17 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { MapPin, Navigation, CheckCircle2, Circle, ExternalLink, Banknote, User as UserIcon, Folder, MoreVertical, Phone, MessageSquare, Copy } from 'lucide-react';
 import { Parcel, UserProfile } from '../types';
 import { cn } from '../lib/utils';
 import { motion } from 'motion/react';
 
 interface ParcelCardProps {
-  key?: string;
   parcel: Parcel;
   profile?: UserProfile | null;
   onStatusChange: (id: string, status: Parcel['status']) => void;
   onMoveClick?: () => void;
 }
 
-export function ParcelCard({ parcel, profile, onStatusChange, onMoveClick }: ParcelCardProps) {
+export const ParcelCard = memo(function ParcelCard({ parcel, profile, onStatusChange, onMoveClick }: ParcelCardProps) {
   const openNavigation = (e: React.MouseEvent) => {
     e.stopPropagation();
     const url = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(parcel.address)}`;
@@ -190,4 +189,4 @@ export function ParcelCard({ parcel, profile, onStatusChange, onMoveClick }: Par
       </div>
     </motion.div>
   );
-}
+});

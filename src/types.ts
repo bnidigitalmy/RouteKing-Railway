@@ -21,10 +21,16 @@ export interface UserProfile {
   uid: string;
   riderName: string;
   courierCompany: string;
+  email?: string;
+  role?: 'admin' | 'user';
   isPro?: boolean;
   trialStartedAt?: number;
   expiryDate?: number;
   subscriptionType?: 'monthly' | 'yearly';
+  dailyScanCount?: number;
+  lastScanResetDate?: string; // ISO date string YYYY-MM-DD
+  monthlyScanCount?: number;
+  lastScanResetMonth?: string; // ISO date string YYYY-MM
 }
 
 export interface OptimizationResult {

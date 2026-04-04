@@ -85,7 +85,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart, isLoggingIn }
               Minyak Lebih Jimat.
             </h1>
             <p className="text-xl text-gray-500 leading-relaxed max-w-lg">
-              RouteKing membantu rider Shopee, Lazada, J&T dan NinjaVan menyusun laluan penghantaran paling efisien secara automatik.
+              Sertai ratusan rider lain yang dah berjaya <span className="font-bold text-blue-600">tingkatkan komisyen harian</span> serta <span className="font-bold text-yellow-500">jimatkan masa & tenaga</span> setiap hari.
             </p>
             <div className="flex flex-col sm:flex-row gap-4 pt-4">
               <button 
@@ -489,7 +489,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart, isLoggingIn }
             <span className="text-blue-600">Raja Jalanan?</span>
           </h2>
           <p className="text-xl text-gray-500 font-medium">
-            Sertai ratusan rider lain yang dah berjaya jimatkan masa dan tenaga setiap hari.
+            Sertai ratusan rider lain yang dah berjaya <span className="font-bold text-blue-600">tingkatkan komisyen harian</span> serta <span className="font-bold text-yellow-500">jimatkan masa & tenaga</span> setiap hari.
           </p>
           <button 
             onClick={onStart}

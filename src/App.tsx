@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { LandingPage } from './components/LandingPage';
-import { Plus, MapPin, Navigation, Trash2, RefreshCw, Package, ArrowRight, Camera, Search, LayoutGrid, List, Map, Filter, Folder, MoreVertical, LogOut, LogIn, AlertCircle, X, Edit2, User as UserIcon, CheckCircle2, Copy, Share2 } from 'lucide-react';
+import { AdminDashboard } from './components/AdminDashboard';
+import { Plus, MapPin, Navigation, Trash2, RefreshCw, Package, ArrowRight, Camera, Search, LayoutGrid, List, Map, Filter, Folder, MoreVertical, LogOut, LogIn, AlertCircle, X, Edit2, User as UserIcon, CheckCircle2, Copy, Share2, ChevronDown, ChevronRight, ShieldCheck } from 'lucide-react';
 import { Parcel, UserProfile } from './types';
 import { Scanner } from './components/Scanner';
 import { LegalModal } from './components/LegalModal';
@@ -30,10 +31,16 @@ import {
   onSnapshot, 
   onAuthStateChanged,
   orderBy, 
+  limit,
   handleFirestoreError,
   OperationType,
   User 
 } from './firebase';
+
+const FREE_DAILY_LIMIT = 50;
+const PRO_DAILY_LIMIT = 300;
+const FREE_MONTHLY_LIMIT = 500;
+const PRO_MONTHLY_LIMIT = 5000;
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -43,6 +50,7 @@ export default function App() {
   const [isNavigationModeOpen, setIsNavigationModeOpen] = useState(false);
   const [navigationFolder, setNavigationFolder] = useState<string | null>(null);
   const [isOptimizing, setIsOptimizing] = useState(false);
+  const [optimizingMessage, setOptimizingMessage] = useState('Menyusun laluan...');
   const [viewMode, setViewMode] = useState<'list' | 'grid' | 'map'>('list');
   
   // Search & Filter States
@@ -67,6 +75,7 @@ export default function App() {
   const [isClearDeliveredModalOpen, setIsClearDeliveredModalOpen] = useState(false);
   const [isMarkingModeOpen, setIsMarkingModeOpen] = useState(false);
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
+  const [collapsedFolders, setCollapsedFolders] = useState<Record<string, boolean>>({});
   const [legalModal, setLegalModal] = useState<{ isOpen: boolean; type: 'privacy' | 'terms' }>({
     isOpen: false,
     type: 'privacy'
@@ -76,6 +85,9 @@ export default function App() {
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [showPWAHint, setShowPWAHint] = useState(false);
+  const [isAdminDashboardOpen, setIsAdminDashboardOpen] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [riderName, setRiderName] = useState('');
   const [courierCompany, setCourierCompany] = useState('Shopee Express (SPX)');
@@ -94,6 +106,13 @@ export default function App() {
       }
       setIsAuthLoading(false);
     });
+
+    // Check for iOS PWA Standalone mode
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !(window as any).MSStream;
+    const isStandalone = window.matchMedia('(display-mode: standalone)').matches || (window.navigator as any).standalone === true;
+    if (isIOS && !isStandalone) {
+      setShowPWAHint(true);
+    }
 
     // Check for payment status in URL
     const urlParams = new URLSearchParams(window.location.search);
@@ -135,7 +154,8 @@ export default function App() {
     const qParcels = query(
       collection(db, 'parcels'), 
       where('uid', '==', user.uid),
-      orderBy('sequenceNumber', 'asc')
+      orderBy('sequenceNumber', 'asc'),
+      limit(500)
     );
     const unsubParcels = onSnapshot(qParcels, (snapshot) => {
       const parcelData = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Parcel));
@@ -164,6 +184,7 @@ export default function App() {
         setProfile(data);
         setRiderName(data.riderName);
         setCourierCompany(data.courierCompany);
+        setIsAdmin(data.role === 'admin' || user.email === 'bnidigital.my@gmail.com');
 
         // Check subscription status
         const now = Date.now();
@@ -205,7 +226,35 @@ export default function App() {
   }, [user]);
 
   const handleScan = async (data: { recipientName?: string; recipientPhone?: string; address: string; trackingNumber: string; isCOD?: boolean; codAmount?: number; groupTag?: string }) => {
-    if (!user) return;
+    if (!user || !profile) return;
+
+    // Quota Check
+    const today = new Date().toISOString().split('T')[0];
+    const thisMonth = today.substring(0, 7); // YYYY-MM
+
+    const isNewDay = profile.lastScanResetDate !== today;
+    const isNewMonth = profile.lastScanResetMonth !== thisMonth;
+
+    const currentDailyCount = isNewDay ? 0 : (profile.dailyScanCount || 0);
+    const currentMonthlyCount = isNewMonth ? 0 : (profile.monthlyScanCount || 0);
+
+    const dailyLimit = profile.isPro ? PRO_DAILY_LIMIT : FREE_DAILY_LIMIT;
+    const monthlyLimit = profile.isPro ? PRO_MONTHLY_LIMIT : FREE_MONTHLY_LIMIT;
+
+    if (currentDailyCount >= dailyLimit) {
+      setIsScannerOpen(false);
+      setError(`Had scan harian dicapai (${currentDailyCount}/${dailyLimit}). Sila cuba lagi esok atau upgrade ke Pro.`);
+      if (!profile.isPro) setIsSubscriptionModalOpen(true);
+      return;
+    }
+
+    if (currentMonthlyCount >= monthlyLimit) {
+      setIsScannerOpen(false);
+      setError(`Had scan bulanan dicapai (${currentMonthlyCount}/${monthlyLimit}). Sila tunggu bulan depan atau upgrade ke Pro.`);
+      if (!profile.isPro) setIsSubscriptionModalOpen(true);
+      return;
+    }
+
     const coords = await getCoordinates(data.address);
     
     const sanitize = (val: any) => {
@@ -246,6 +295,15 @@ export default function App() {
 
     try {
       await setDoc(doc(db, 'parcels', parcelId), newParcel);
+      
+      // Update scan count
+      await updateDoc(doc(db, 'profiles', user.uid), {
+        dailyScanCount: currentDailyCount + 1,
+        lastScanResetDate: today,
+        monthlyScanCount: currentMonthlyCount + 1,
+        lastScanResetMonth: thisMonth
+      });
+
       setIsScannerOpen(false);
       setError(null);
       
@@ -341,14 +399,30 @@ export default function App() {
         resolve(startPoint);
         return;
       }
+
+      // Manual timeout to prevent hanging on some devices (especially iOS PWA)
+      const timeoutId = setTimeout(() => {
+        console.warn("Geolocation manual timeout reached");
+        resolve(startPoint);
+      }, 10000);
+
       navigator.geolocation.getCurrentPosition(
         (pos) => {
+          clearTimeout(timeoutId);
           const loc = { lat: pos.coords.latitude, lng: pos.coords.longitude };
           setStartPoint(loc);
           resolve(loc);
         },
-        () => resolve(startPoint),
-        { timeout: 5000 }
+        (err) => {
+          clearTimeout(timeoutId);
+          console.warn("Geolocation error or denied:", err.message);
+          resolve(startPoint);
+        },
+        { 
+          timeout: 8000, 
+          enableHighAccuracy: true,
+          maximumAge: 60000 // Accept a cached position up to 1 minute old
+        }
       );
     });
   };
@@ -356,9 +430,14 @@ export default function App() {
   const handleOptimize = useCallback(async (targetFolder?: string) => {
     if (!user) return;
     setIsOptimizing(true);
+    setOptimizingMessage('Mencari lokasi anda...');
+    
+    // Small delay to ensure the loading overlay is rendered on iOS
+    await new Promise(resolve => setTimeout(resolve, 300));
     
     try {
       const currentPos = await getCurrentLocation();
+      setOptimizingMessage('Menganalisis alamat parcel...');
       
       let optimizedParcels: Parcel[] = [];
       let parcelsToUpdate: Parcel[] = [];
@@ -366,6 +445,7 @@ export default function App() {
       if (typeof targetFolder === 'string') {
         const folderPending = parcels.filter(p => p.status !== 'delivered' && (p.folder || 'Tiada Folder') === targetFolder);
         if (folderPending.length > 0) {
+          setOptimizingMessage(`Menyusun ${folderPending.length} parcel...`);
           const optimized = await optimizeRoute(folderPending, currentPos);
           const seqNumbers = folderPending.map(p => p.sequenceNumber).sort((a, b) => a - b);
           parcelsToUpdate = optimized.map((p, i) => ({ ...p, sequenceNumber: seqNumbers[i] }));
@@ -373,21 +453,39 @@ export default function App() {
       } else {
         const pendingParcels = parcels.filter(p => p.status !== 'delivered');
         const deliveredParcels = parcels.filter(p => p.status === 'delivered');
-        const optimized = await optimizeRoute(pendingParcels, currentPos);
-        const allSorted = [...optimized, ...deliveredParcels];
-        parcelsToUpdate = allSorted.map((p, i) => ({ ...p, sequenceNumber: i + 1 }));
+        
+        if (pendingParcels.length > 0) {
+          setOptimizingMessage(`Menyusun ${pendingParcels.length} parcel...`);
+          const optimized = await optimizeRoute(pendingParcels, currentPos);
+          const allSorted = [...optimized, ...deliveredParcels];
+          parcelsToUpdate = allSorted.map((p, i) => ({ ...p, sequenceNumber: i + 1 }));
+        }
       }
 
-      // Update in Firestore
-      const promises = parcelsToUpdate.map(p => 
-        updateDoc(doc(db, 'parcels', p.id), { sequenceNumber: p.sequenceNumber })
-      );
-      await Promise.all(promises);
+      if (parcelsToUpdate.length > 0) {
+        setOptimizingMessage('Mengemaskini urutan...');
+        // Update in Firestore
+        const promises = parcelsToUpdate.map(p => 
+          updateDoc(doc(db, 'parcels', p.id), { sequenceNumber: p.sequenceNumber })
+        );
+        await Promise.all(promises);
+        
+        // Switch to map view to show the result visually
+        setViewMode('map');
+      }
+
+      confetti({
+        particleCount: 100,
+        spread: 70,
+        origin: { y: 0.6 }
+      });
 
     } catch (error) {
       console.error("Optimization failed:", error);
+      setError("Gagal menyusun laluan. Sila cuba lagi.");
     } finally {
       setIsOptimizing(false);
+      setOptimizingMessage('Menyusun laluan...');
     }
   }, [parcels, user]);
 
@@ -574,29 +672,34 @@ export default function App() {
   };
 
   // Get unique groups for filter dropdown
-  const uniqueGroups = Array.from(new Set(parcels.map(p => p.groupTag).filter(Boolean))) as string[];
+  const uniqueGroups = React.useMemo(() => 
+    Array.from(new Set(parcels.map(p => p.groupTag).filter(Boolean))) as string[],
+    [parcels]
+  );
 
   // Apply filters
-  const filteredParcels = parcels.filter(p => {
-    // Search query
-    const searchLower = searchQuery.toLowerCase();
-    const matchesSearch = 
-      p.address.toLowerCase().includes(searchLower) ||
-      p.trackingNumber.toLowerCase().includes(searchLower) ||
-      (p.recipientName && p.recipientName.toLowerCase().includes(searchLower)) ||
-      (p.groupTag && p.groupTag.toLowerCase().includes(searchLower));
+  const filteredParcels = React.useMemo(() => {
+    return parcels.filter(p => {
+      // Search query
+      const searchLower = searchQuery.toLowerCase();
+      const matchesSearch = 
+        p.address.toLowerCase().includes(searchLower) ||
+        p.trackingNumber.toLowerCase().includes(searchLower) ||
+        (p.recipientName && p.recipientName.toLowerCase().includes(searchLower)) ||
+        (p.groupTag && p.groupTag.toLowerCase().includes(searchLower));
 
-    // Status filter
-    const matchesStatus = filterStatus === 'all' ? true : p.status === filterStatus;
-    
-    // COD filter
-    const matchesCOD = filterCOD ? p.isCOD === true : true;
-    
-    // Group filter
-    const matchesGroup = filterGroup === 'all' ? true : p.groupTag === filterGroup;
+      // Status filter
+      const matchesStatus = filterStatus === 'all' ? true : p.status === filterStatus;
+      
+      // COD filter
+      const matchesCOD = filterCOD ? p.isCOD === true : true;
+      
+      // Group filter
+      const matchesGroup = filterGroup === 'all' ? true : p.groupTag === filterGroup;
 
-    return matchesSearch && matchesStatus && matchesCOD && matchesGroup;
-  });
+      return matchesSearch && matchesStatus && matchesCOD && matchesGroup;
+    });
+  }, [parcels, searchQuery, filterStatus, filterCOD, filterGroup]);
 
   if (isAuthLoading) {
     return (
@@ -615,6 +718,79 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-gray-50 pb-32">
+      {/* iOS PWA Hint */}
+      <AnimatePresence>
+        {showPWAHint && (
+          <motion.div 
+            initial={{ y: -100, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: -100, opacity: 0 }}
+            className="fixed top-4 left-4 right-4 z-[100] bg-blue-600 text-white p-4 rounded-2xl shadow-2xl flex items-center gap-4 border border-blue-400"
+          >
+            <div className="bg-white/20 p-2 rounded-xl">
+              <Share2 size={24} />
+            </div>
+            <div className="flex-1">
+              <p className="text-sm font-black leading-tight">Guna RouteKing Macam App!</p>
+              <p className="text-[10px] opacity-90 font-medium">Klik butang <span className="font-bold">Share</span> dan pilih <span className="font-bold">"Add to Home Screen"</span> untuk pengalaman terbaik.</p>
+            </div>
+            <button 
+              onClick={() => setShowPWAHint(false)}
+              className="p-2 hover:bg-white/10 rounded-full transition-colors"
+            >
+              <X size={20} />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Optimization Loading Overlay */}
+      <AnimatePresence>
+        {isOptimizing && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/60 backdrop-blur-md z-[100] flex items-center justify-center p-6"
+          >
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              className="bg-white rounded-3xl p-8 max-w-xs w-full text-center space-y-6 shadow-2xl"
+            >
+              <div className="relative w-24 h-24 mx-auto">
+                <div className="absolute inset-0 border-4 border-blue-100 rounded-full" />
+                <motion.div 
+                  animate={{ rotate: 360 }}
+                  transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
+                  className="absolute inset-0 border-4 border-blue-600 rounded-full border-t-transparent"
+                />
+                <div className="absolute inset-0 flex items-center justify-center text-blue-600">
+                  <Navigation size={32} className="animate-pulse" />
+                </div>
+              </div>
+              
+              <div className="space-y-2">
+                <h3 className="text-xl font-black text-gray-900 tracking-tight">Menyusun Laluan</h3>
+                <p className="text-gray-500 font-medium animate-pulse">{optimizingMessage}</p>
+              </div>
+              
+              <div className="pt-4">
+                <div className="w-full bg-gray-100 h-1.5 rounded-full overflow-hidden">
+                  <motion.div 
+                    initial={{ width: "0%" }}
+                    animate={{ width: "100%" }}
+                    transition={{ duration: 15, ease: "linear" }}
+                    className="h-full bg-blue-600"
+                  />
+                </div>
+                <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest mt-3">Sila tunggu sebentar...</p>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Legal Modal */}
       <LegalModal 
         isOpen={legalModal.isOpen} 
@@ -863,7 +1039,16 @@ export default function App() {
         </div>
 
         {viewMode === 'map' ? (
-          <div className="animate-in fade-in slide-in-from-bottom-4 duration-300">
+          <div className="animate-in fade-in slide-in-from-bottom-4 duration-300 space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="font-bold text-gray-800">Peta Laluan</h2>
+              <button 
+                onClick={() => setViewMode('list')}
+                className="flex items-center gap-1 text-xs font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg transition-colors"
+              >
+                <List size={14} /> Kembali ke Senarai
+              </button>
+            </div>
             <MapPreview parcels={filteredParcels} startPoint={startPoint} />
           </div>
         ) : (
@@ -884,6 +1069,8 @@ export default function App() {
                 .sort((a, b) => a.sequenceNumber - b.sequenceNumber);
               
               if (folder === 'Tiada Folder' && folderParcels.length === 0 && folders.length > 0) return null;
+
+              const isCollapsed = collapsedFolders[folder] || false;
 
               return (
                 <div 
@@ -908,11 +1095,17 @@ export default function App() {
                   )}
                 >
                   <div className={cn("flex items-center justify-between mb-3 px-2", folder === 'Tiada Folder' && folderParcels.length === 0 && "hidden")}>
-                    <h3 className="font-bold text-gray-700 flex items-center gap-2">
-                      {folder === 'Tiada Folder' ? <Package size={18} className="text-gray-400" /> : <Folder size={18} className="text-blue-500" />}
-                      {folder}
-                      <span className="bg-gray-200 text-gray-600 text-xs py-0.5 px-2 rounded-full">{folderParcels.length}</span>
-                    </h3>
+                    <button 
+                      onClick={() => setCollapsedFolders(prev => ({ ...prev, [folder]: !isCollapsed }))}
+                      className="flex items-center gap-2 hover:opacity-70 transition-opacity"
+                    >
+                      {isCollapsed ? <ChevronRight size={18} className="text-gray-400" /> : <ChevronDown size={18} className="text-gray-400" />}
+                      <h3 className="font-bold text-gray-700 flex items-center gap-2">
+                        {folder === 'Tiada Folder' ? <Package size={18} className="text-gray-400" /> : <Folder size={18} className="text-blue-500" />}
+                        {folder}
+                        <span className="bg-gray-200 text-gray-600 text-xs py-0.5 px-2 rounded-full">{folderParcels.length}</span>
+                      </h3>
+                    </button>
                     <div className="flex items-center gap-2">
                       <button 
                         onClick={() => handleStartNavigation(folder)} 
@@ -938,25 +1131,27 @@ export default function App() {
                     </div>
                   </div>
                   
-                  <div className={cn(
-                    "grid gap-3",
-                    viewMode === 'grid' ? "grid-cols-2" : "grid-cols-1"
-                  )}>
-                    {folderParcels.map(parcel => (
-                      <ParcelCard 
-                        key={parcel.id} 
-                        parcel={parcel} 
-                        profile={profile}
-                        onStatusChange={handleStatusChange}
-                        onMoveClick={() => setParcelOptionsId(parcel.id)}
-                      />
-                    ))}
-                    {folderParcels.length === 0 && folder !== 'Tiada Folder' && (
-                      <div className="col-span-full text-center py-6 text-gray-400 text-sm font-medium border-2 border-dashed border-gray-200 rounded-xl">
-                        Tarik parcel ke sini atau guna menu 3-titik
-                      </div>
-                    )}
-                  </div>
+                  {!isCollapsed && (
+                    <div className={cn(
+                      "grid gap-3 animate-in fade-in slide-in-from-top-1 duration-200",
+                      viewMode === 'grid' ? "grid-cols-2" : "grid-cols-1"
+                    )}>
+                      {folderParcels.map(parcel => (
+                        <ParcelCard 
+                          key={parcel.id} 
+                          parcel={parcel} 
+                          profile={profile}
+                          onStatusChange={handleStatusChange}
+                          onMoveClick={() => setParcelOptionsId(parcel.id)}
+                        />
+                      ))}
+                      {folderParcels.length === 0 && folder !== 'Tiada Folder' && (
+                        <div className="col-span-full text-center py-6 text-gray-400 text-sm font-medium border-2 border-dashed border-gray-200 rounded-xl">
+                          Tarik parcel ke sini atau guna menu 3-titik
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -973,7 +1168,7 @@ export default function App() {
         )}
 
           {/* Floating Action Button */}
-          <div className="fixed bottom-10 left-1/2 -translate-x-1/2 z-40">
+          <div className="fixed bottom-10 left-1/2 -translate-x-1/2 z-40 flex flex-col items-center gap-3">
             <motion.button
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.9 }}
@@ -996,6 +1191,10 @@ export default function App() {
             <Scanner 
               onScan={handleScan} 
               onClose={() => setIsScannerOpen(false)} 
+              quota={profile ? {
+                current: profile.dailyScanCount || 0,
+                limit: profile.isPro ? PRO_DAILY_LIMIT : FREE_DAILY_LIMIT
+              } : undefined}
             />
           )}
 
@@ -1005,6 +1204,10 @@ export default function App() {
               mode="mark"
               onMarkScan={handleMarkingScan}
               onClose={() => setIsMarkingModeOpen(false)} 
+              quota={profile ? {
+                current: profile.dailyScanCount || 0,
+                limit: profile.isPro ? PRO_DAILY_LIMIT : FREE_DAILY_LIMIT
+              } : undefined}
             />
           )}
 
@@ -1401,7 +1604,40 @@ export default function App() {
                             </span>
                           </div>
                         )}
+                        <div className="pt-3 border-t border-gray-100 space-y-2">
+                          <div className="flex justify-between items-center">
+                            <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Kuota Scan (Harian)</span>
+                            <span className={cn(
+                              "text-xs font-black",
+                              (profile.dailyScanCount || 0) >= (profile.isPro ? PRO_DAILY_LIMIT : FREE_DAILY_LIMIT) ? "text-red-600" : "text-blue-600"
+                            )}>
+                              {profile.dailyScanCount || 0} / {profile.isPro ? PRO_DAILY_LIMIT : FREE_DAILY_LIMIT}
+                            </span>
+                          </div>
+                          <div className="flex justify-between items-center">
+                            <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Kuota Scan (Bulanan)</span>
+                            <span className={cn(
+                              "text-xs font-black",
+                              (profile.monthlyScanCount || 0) >= (profile.isPro ? PRO_MONTHLY_LIMIT : FREE_MONTHLY_LIMIT) ? "text-red-600" : "text-blue-600"
+                            )}>
+                              {profile.monthlyScanCount || 0} / {profile.isPro ? PRO_MONTHLY_LIMIT : FREE_MONTHLY_LIMIT}
+                            </span>
+                          </div>
+                        </div>
                       </div>
+                    )}
+
+                    {isAdmin && (
+                      <button 
+                        onClick={() => {
+                          setIsProfileModalOpen(false);
+                          setIsAdminDashboardOpen(true);
+                        }}
+                        className="w-full py-4 bg-blue-50 hover:bg-blue-100 text-blue-600 font-black rounded-2xl transition-all flex items-center justify-center gap-2 border-2 border-blue-100 shadow-sm mb-4"
+                      >
+                        <ShieldCheck size={20} />
+                        Buka Admin Dashboard
+                      </button>
                     )}
 
                     <button 
@@ -1454,6 +1690,11 @@ export default function App() {
           RouteKing v1.0 • Built for Drivers
         </p>
       </div>
+
+      {/* Admin Dashboard */}
+      {isAdminDashboardOpen && (
+        <AdminDashboard onClose={() => setIsAdminDashboardOpen(false)} />
+      )}
 
       {/* Subscription Modal */}
       {isSubscriptionModalOpen && (

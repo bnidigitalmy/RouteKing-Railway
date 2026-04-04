@@ -42,14 +42,7 @@ export async function extractParcelInfo(base64Image: string) {
           {
             parts: [
               {
-                text: `You are a courier assistant in Malaysia. Extract the recipient's name, phone number, delivery address and tracking number from this shipping label (AWB). 
-                Rules:
-                1. The name should be the RECIPIENT'S name (Penerima).
-                2. The phone number should be the RECIPIENT'S phone number (usually starts with 01 or 601).
-                3. The address should be the RECIPIENT'S address.
-                4. Include the full address including Postcode, City, and State.
-                5. The tracking number is usually a long alphanumeric string (e.g., JNT123, SPX123, MY123).
-                6. Return ONLY a JSON object.`,
+                text: "Extract from Malaysian AWB: recipientName, recipientPhone, address, trackingNumber, isCOD (bool), codAmount (number). Return JSON only.",
               },
               {
                 inlineData: {
@@ -81,6 +74,14 @@ export async function extractParcelInfo(base64Image: string) {
                 type: Type.STRING,
                 description: "Courier tracking number"
               },
+              isCOD: {
+                type: Type.BOOLEAN,
+                description: "True if COD is mentioned"
+              },
+              codAmount: {
+                type: Type.NUMBER,
+                description: "The RM amount for COD if applicable"
+              }
             },
             required: ["recipientName", "address", "trackingNumber"],
           },
@@ -135,7 +136,7 @@ export async function getCoordinates(address: string) {
     
     result = await withRetry(async () => {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 8000);
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
       
       const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${query}&countrycodes=my&limit=1`, {
         signal: controller.signal,

@@ -9,24 +9,22 @@ interface ScannerProps {
   onMarkScan?: (trackingNumber: string) => Parcel | undefined;
   onClose: () => void;
   mode?: 'scan' | 'mark';
+  quota?: {
+    current: number;
+    limit: number;
+  };
 }
 
-export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan' }: ScannerProps) {
+export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan', quota }: ScannerProps) {
   const [isScanning, setIsScanning] = useState(false);
+  const [isCompressing, setIsCompressing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const galleryInputRef = useRef<HTMLInputElement>(null);
   
-  // Live Camera States
-  const [isLive, setIsLive] = useState(false);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [stream, setStream] = useState<MediaStream | null>(null);
-  const [facingMode, setFacingMode] = useState<'user' | 'environment'>('environment');
-
   // Form states
-  const [scannedData, setScannedData] = useState<{recipientName?: string, recipientPhone?: string, address: string, trackingNumber: string} | null>(null);
+  const [scannedData, setScannedData] = useState<{recipientName?: string, recipientPhone?: string, address: string, trackingNumber: string, isCOD?: boolean, codAmount?: number} | null>(null);
   const [foundParcel, setFoundParcel] = useState<Parcel | null>(null);
   const [editName, setEditName] = useState('');
   const [editPhone, setEditPhone] = useState('');
@@ -36,90 +34,50 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan' }: ScannerP
   const [isCOD, setIsCOD] = useState(false);
   const [codAmount, setCodAmount] = useState('');
 
-  // Cleanup stream on unmount
-  useEffect(() => {
-    return () => {
-      if (stream) {
-        stream.getTracks().forEach(track => track.stop());
-      }
-    };
-  }, [stream]);
+  const compressImage = (base64: string): Promise<string> => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let width = img.width;
+        let height = img.height;
 
-  const toggleCamera = () => {
-    const newMode = facingMode === 'user' ? 'environment' : 'user';
-    setFacingMode(newMode);
-    stopLiveCamera();
-    setTimeout(() => startLiveCamera(newMode), 100);
-  };
+        // Max width/height 1000px (optimized for speed vs accuracy)
+        const MAX_SIZE = 1000;
+        if (width > height) {
+          if (width > MAX_SIZE) {
+            height *= MAX_SIZE / width;
+            width = MAX_SIZE;
+          }
+        } else {
+          if (height > MAX_SIZE) {
+            width *= MAX_SIZE / height;
+            height = MAX_SIZE;
+          }
+        }
 
-  const startLiveCamera = async (mode: 'user' | 'environment' = facingMode) => {
-    setError(null);
-    
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      setError("Pelayar anda tidak menyokong Live Camera. Sila guna 'Kamera Sistem'.");
-      return;
-    }
-
-    try {
-      // Try with specified camera first
-      const constraints = { 
-        video: { 
-          facingMode: { ideal: mode },
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
-        } 
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx?.drawImage(img, 0, 0, width, height);
+        
+        // Compress to JPEG with 0.6 quality (smaller payload = faster upload)
+        resolve(canvas.toDataURL('image/jpeg', 0.6));
       };
-      
-      const mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
-      setStream(mediaStream);
-      if (videoRef.current) {
-        videoRef.current.srcObject = mediaStream;
-      }
-      setIsLive(true);
-    } catch (err: any) {
-      console.error("Camera access error:", err);
-      let msg = "Gagal akses kamera.";
-      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-        msg = "Izin kamera ditolak. Sila benarkan akses kamera di tetapan pelayar anda.";
-      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
-        msg = "Kamera tidak dijumpai.";
-      }
-      setError(msg);
-      // Don't auto-fallback, let user choose
-    }
-  };
-
-  const stopLiveCamera = () => {
-    if (stream) {
-      stream.getTracks().forEach(track => track.stop());
-      setStream(null);
-    }
-    setIsLive(false);
-  };
-
-  const takePhoto = () => {
-    if (!videoRef.current || !canvasRef.current) return;
-
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    const context = canvas.getContext('2d');
-
-    if (context) {
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      context.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const base64 = canvas.toDataURL('image/jpeg', 0.8);
-      processImage(base64);
-      stopLiveCamera();
-    }
+      img.src = base64;
+    });
   };
 
   const processImage = async (base64: string) => {
-    setIsScanning(true);
+    setIsCompressing(true);
     setError(null);
 
     try {
-      const result = await extractParcelInfo(base64);
+      const compressedBase64 = await compressImage(base64);
+      setIsCompressing(false);
+      setIsScanning(true);
+      
+      const result = await extractParcelInfo(compressedBase64);
       
       // Sanitize result to avoid "null" or "undefined" strings
       const sanitize = (val: any) => {
@@ -146,8 +104,8 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan' }: ScannerP
       setEditAddress(sanitize(result.address));
       setEditTracking(sanitize(result.trackingNumber));
       setEditGroup('');
-      setIsCOD(false);
-      setCodAmount('');
+      setIsCOD(!!result.isCOD);
+      setCodAmount(result.codAmount ? String(result.codAmount) : '');
     } catch (err: any) {
       const errMsg = err?.message || "Gagal membaca label.";
       setError(`${errMsg} Pastikan gambar label terang dan jelas.`);
@@ -167,6 +125,8 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan' }: ScannerP
       processImage(base64);
     };
     reader.readAsDataURL(file);
+    // Reset input so same file can be scanned again if needed
+    event.target.value = '';
   };
 
   const handleSubmit = async () => {
@@ -180,8 +140,10 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan' }: ScannerP
     }
 
     setIsSaving(true);
+    setError(null);
     try {
       if (onScan) {
+        // Add a small delay for UI feedback
         await onScan({
           recipientName: editName,
           recipientPhone: editPhone,
@@ -203,63 +165,31 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan' }: ScannerP
     <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center sm:p-4 backdrop-blur-sm overflow-y-auto">
       <div className="bg-white sm:rounded-2xl w-full max-w-md min-h-screen sm:min-h-0 overflow-hidden shadow-2xl flex flex-col">
         <div className={cn("p-4 border-b flex items-center justify-between text-white shrink-0", mode === 'mark' ? "bg-purple-600" : "bg-blue-600")}>
-          <h3 className="font-bold text-lg">
-            {isLive ? 'Snap Gambar Label' : (mode === 'mark' ? 'Mod Menanda (Tulis No.)' : (scannedData ? 'Sahkan Maklumat' : 'Scan Label Parcel'))}
-          </h3>
-          <button onClick={isLive ? stopLiveCamera : onClose} className="p-1 hover:bg-black/10 rounded-full transition-colors">
+          <div className="flex flex-col">
+            <h3 className="font-bold text-lg leading-tight">
+              {mode === 'mark' ? 'Mod Menanda' : (scannedData ? 'Sahkan Maklumat' : 'Scan Label Parcel')}
+            </h3>
+            {quota && (
+              <span className="text-[10px] font-black opacity-80 uppercase tracking-widest">
+                Baki Scan Hari Ini: {quota.limit - quota.current} / {quota.limit}
+              </span>
+            )}
+          </div>
+          <button onClick={onClose} className="p-1 hover:bg-black/10 rounded-full transition-colors">
             <X size={24} />
           </button>
         </div>
 
         <div className="p-6 flex flex-col gap-6 flex-1 overflow-y-auto">
-          {isLive ? (
-            <div className="flex flex-col gap-4 animate-in fade-in duration-300">
-              <div className="relative aspect-[3/4] bg-black rounded-2xl overflow-hidden border-4 border-gray-100 shadow-inner">
-                <video 
-                  ref={videoRef} 
-                  autoPlay 
-                  playsInline 
-                  className="w-full h-full object-cover"
-                />
-                {/* Overlay for scanning area */}
-                <div className="absolute inset-0 border-[40px] border-black/40 pointer-events-none">
-                  <div className="w-full h-full border-2 border-white/50 rounded-lg" />
-                </div>
-                <p className="absolute bottom-4 left-0 right-0 text-center text-white text-[10px] font-black uppercase tracking-widest bg-black/40 py-2">
-                  Letakkan label di tengah petak
-                </p>
-                <button 
-                  onClick={toggleCamera}
-                  className="absolute top-4 right-4 p-3 bg-black/40 text-white rounded-full backdrop-blur-sm active:scale-90 transition-all"
-                >
-                  <RefreshCw size={20} />
-                </button>
-              </div>
-              
-              <div className="flex gap-3">
-                <button
-                  onClick={stopLiveCamera}
-                  className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-4 rounded-xl transition-all active:scale-95"
-                >
-                  Batal
-                </button>
-                <button
-                  onClick={takePhoto}
-                  className={cn(
-                    "flex-[2] text-white font-black py-4 rounded-xl shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2",
-                    mode === 'mark' ? "bg-purple-600 hover:bg-purple-700" : "bg-blue-600 hover:bg-blue-700"
-                  )}
-                >
-                  <Camera size={24} />
-                  SNAP GAMBAR
-                </button>
-              </div>
-              <canvas ref={canvasRef} className="hidden" />
+          {isCompressing ? (
+            <div className="flex flex-col items-center gap-4 py-8">
+              <RefreshCw className="animate-spin text-blue-600" size={48} />
+              <p className="text-gray-600 font-medium animate-pulse">Sedang mengecilkan saiz gambar...</p>
             </div>
           ) : isScanning ? (
             <div className="flex flex-col items-center gap-4 py-8">
               <Loader2 className="animate-spin text-blue-600" size={48} />
-              <p className="text-gray-600 font-medium animate-pulse">Sedang mengecam label...</p>
+              <p className="text-gray-600 font-medium animate-pulse">Sedang mengecam label (OCR)...</p>
             </div>
           ) : foundParcel ? (
             <div className="flex flex-col items-center gap-6 py-4 animate-in zoom-in duration-300">
@@ -284,7 +214,7 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan' }: ScannerP
               <button
                 onClick={() => {
                   setFoundParcel(null);
-                  startLiveCamera();
+                  fileInputRef.current?.click();
                 }}
                 className="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-4 rounded-xl shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2"
               >
@@ -406,7 +336,7 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan' }: ScannerP
                 {isSaving ? (
                   <>
                     <RefreshCw className="animate-spin" size={20} />
-                    Menyimpan...
+                    Menyimpan & Geocoding...
                   </>
                 ) : (
                   <>
@@ -438,27 +368,22 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan' }: ScannerP
 
               <div className="grid grid-cols-1 w-full gap-3">
                 <button
-                  onClick={startLiveCamera}
+                  onClick={() => fileInputRef.current?.click()}
                   className={cn(
-                    "flex items-center justify-center gap-2 text-white font-bold py-4 px-6 rounded-xl transition-all active:scale-95 shadow-lg",
-                    mode === 'mark' ? "bg-purple-600 hover:bg-purple-700" : "bg-blue-600 hover:bg-blue-700"
+                    "flex items-center justify-center gap-3 text-white font-bold py-5 px-6 rounded-2xl transition-all active:scale-95 shadow-xl",
+                    mode === 'mark' ? "bg-purple-600 hover:bg-purple-700 shadow-purple-200" : "bg-blue-600 hover:bg-blue-700 shadow-blue-200"
                   )}
                 >
-                  <Camera size={20} />
-                  {mode === 'mark' ? 'Scan Sekarang' : 'Live Camera (Laju)'}
+                  <Camera size={28} />
+                  <div className="text-left">
+                    <p className="text-lg leading-none">Buka Kamera</p>
+                    <p className="text-[10px] opacity-80 font-medium uppercase tracking-wider">Snap Label Sekarang</p>
+                  </div>
                 </button>
                 
                 <button
-                  onClick={() => fileInputRef.current?.click()}
-                  className="flex items-center justify-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-3 px-6 rounded-xl transition-all"
-                >
-                  <Camera size={20} className="text-gray-400" />
-                  Guna Kamera Sistem
-                </button>
-
-                <button
                   onClick={() => galleryInputRef.current?.click()}
-                  className="flex items-center justify-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-3 px-6 rounded-xl transition-all"
+                  className="flex items-center justify-center gap-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-4 px-6 rounded-2xl transition-all active:scale-95"
                 >
                   <Upload size={20} className="text-gray-400" />
                   Pilih dari Galeri
@@ -468,15 +393,9 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan' }: ScannerP
               {error && (
                 <div className="p-4 bg-red-50 text-red-600 rounded-xl text-sm font-medium border border-red-100 w-full text-center space-y-2">
                   <p>{error}</p>
-                  <p className="text-[10px] text-red-400 font-normal">
-                    Tips: Sila guna pelayar Chrome atau Safari untuk pengalaman terbaik.
+                  <p className="text-[10px] text-red-400 font-normal uppercase tracking-widest">
+                    Tips: Pastikan gambar terang & jelas
                   </p>
-                  <button 
-                    onClick={() => fileInputRef.current?.click()}
-                    className="text-xs font-bold underline uppercase tracking-wider block w-full"
-                  >
-                    Klik Sini Untuk Kamera Sistem
-                  </button>
                 </div>
               )}
             </>
@@ -485,7 +404,7 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan' }: ScannerP
 
         <input
           type="file"
-          accept="image/*;capture=camera"
+          accept="image/*"
           capture="environment"
           className="absolute w-0 h-0 opacity-0 pointer-events-none"
           ref={fileInputRef}
