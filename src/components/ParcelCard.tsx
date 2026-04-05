@@ -1,17 +1,18 @@
 import React, { memo } from 'react';
-import { MapPin, Navigation, CheckCircle2, Circle, ExternalLink, Banknote, User as UserIcon, Folder, MoreVertical, Phone, MessageSquare, Copy } from 'lucide-react';
+import { MapPin, Navigation, CheckCircle2, Circle, ExternalLink, Banknote, User as UserIcon, Folder, MoreVertical, Phone, MessageSquare, Copy, Image as ImageIcon, X } from 'lucide-react';
 import { Parcel, UserProfile } from '../types';
-import { cn } from '../lib/utils';
-import { motion } from 'motion/react';
+import { cn, getGoogleMapsLetter } from '../lib/utils';
+import { motion, AnimatePresence } from 'motion/react';
 
 interface ParcelCardProps {
   parcel: Parcel;
   profile?: UserProfile | null;
   onStatusChange: (id: string, status: Parcel['status']) => void;
   onMoveClick?: () => void;
+  onViewPOD?: (parcel: Parcel) => void;
 }
 
-export const ParcelCard = memo(function ParcelCard({ parcel, profile, onStatusChange, onMoveClick }: ParcelCardProps) {
+export const ParcelCard = memo(function ParcelCard({ parcel, profile, onStatusChange, onMoveClick, onViewPOD }: ParcelCardProps) {
   const openNavigation = (e: React.MouseEvent) => {
     e.stopPropagation();
     const url = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(parcel.address)}`;
@@ -63,30 +64,36 @@ export const ParcelCard = memo(function ParcelCard({ parcel, profile, onStatusCh
       <div className="flex gap-4">
         {/* Sequence Number Badge */}
         <div className={cn(
-          "flex-shrink-0 w-12 h-12 rounded-xl flex items-center justify-center font-black text-xl shadow-inner",
+          "flex-shrink-0 w-12 h-12 rounded-xl flex items-center justify-center flex-col shadow-inner",
           parcel.status === 'delivered' 
             ? "bg-green-500 text-white" 
             : "bg-blue-600 text-white"
         )}>
-          {parcel.sequenceNumber}
+          <span className="font-black text-xl leading-none">{parcel.sequenceNumber}</span>
+          <span className="text-[10px] font-bold opacity-80 leading-none mt-0.5">({getGoogleMapsLetter(parcel.sequenceNumber)})</span>
         </div>
 
         <div className="flex-1 min-w-0">
           <div className="flex items-start justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">
-                {parcel.trackingNumber}
+            <div className="flex flex-col">
+              <div className="flex items-center gap-2">
+                <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">
+                  {parcel.trackingNumber}
+                </p>
+                <button 
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    navigator.clipboard.writeText(parcel.trackingNumber);
+                  }}
+                  className="p-1 text-gray-300 hover:text-blue-500 transition-colors"
+                  title="Salin No. Tracking"
+                >
+                  <Copy size={12} />
+                </button>
+              </div>
+              <p className="text-[9px] font-bold text-gray-300 uppercase tracking-tighter">
+                Scan: {new Date(parcel.scannedAt).toLocaleDateString('ms-MY', { day: '2-digit', month: 'short' })} • {new Date(parcel.scannedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
               </p>
-              <button 
-                onClick={(e) => {
-                  e.stopPropagation();
-                  navigator.clipboard.writeText(parcel.trackingNumber);
-                }}
-                className="p-1 text-gray-300 hover:text-blue-500 transition-colors"
-                title="Salin No. Tracking"
-              >
-                <Copy size={12} />
-              </button>
             </div>
             <div className="flex items-center gap-2">
               {parcel.status === 'delivered' && (
@@ -143,6 +150,15 @@ export const ParcelCard = memo(function ParcelCard({ parcel, profile, onStatusCh
 
           {/* Action Buttons */}
           <div className="grid grid-cols-2 gap-2 mt-4">
+            {parcel.status === 'delivered' && parcel.podPhotoUrl && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onViewPOD?.(parcel); }}
+                className="col-span-2 flex items-center justify-center gap-2 bg-purple-50 hover:bg-purple-100 text-purple-700 font-black py-2.5 rounded-xl text-xs transition-all active:scale-95 mb-1 border border-purple-100"
+              >
+                <ImageIcon size={14} /> Lihat Gambar POD
+              </button>
+            )}
+            
             {parcel.recipientPhone && (
               <div className="col-span-2 flex gap-2 mb-1">
                 <button 
@@ -170,7 +186,7 @@ export const ParcelCard = memo(function ParcelCard({ parcel, profile, onStatusCh
             
             {parcel.status !== 'delivered' ? (
               <button
-                onClick={() => onStatusChange(parcel.id, 'delivered')}
+                onClick={(e) => { e.stopPropagation(); onStatusChange(parcel.id, 'delivered'); }}
                 className="flex items-center justify-center gap-2 bg-green-600 hover:bg-green-700 text-white font-black py-3 rounded-xl text-xs transition-all active:scale-95 shadow-md shadow-green-100"
               >
                 <CheckCircle2 size={14} />
@@ -178,7 +194,7 @@ export const ParcelCard = memo(function ParcelCard({ parcel, profile, onStatusCh
               </button>
             ) : (
               <button
-                onClick={() => onStatusChange(parcel.id, 'pending')}
+                onClick={(e) => { e.stopPropagation(); onStatusChange(parcel.id, 'pending'); }}
                 className="flex items-center justify-center gap-2 bg-white border-2 border-gray-100 text-gray-400 font-black py-3 rounded-xl text-xs transition-all active:scale-95"
               >
                 Reset

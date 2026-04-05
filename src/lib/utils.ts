@@ -53,3 +53,22 @@ export async function withRetry<T>(
   }
   throw lastError;
 }
+
+/**
+ * Converts a sequence number (1, 2, 3...) to a Google Maps letter (B, C, D...).
+ * Origin (Hub) is always 'A'.
+ * Stop 1 = 'B', Stop 2 = 'C', ..., Stop 25 = 'Z', Stop 26 = 'AA', etc.
+ */
+export function getGoogleMapsLetter(sequenceNumber: number): string {
+  // Google Maps starts with A as the origin.
+  // So Stop 1 is the 2nd point (index 1).
+  const index = sequenceNumber; 
+  let letter = '';
+  let tempIndex = index;
+
+  while (tempIndex >= 0) {
+    letter = String.fromCharCode(65 + (tempIndex % 26)) + letter;
+    tempIndex = Math.floor(tempIndex / 26) - 1;
+  }
+  return letter;
+}

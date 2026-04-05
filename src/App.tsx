@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { LandingPage } from './components/LandingPage';
 import { AdminDashboard } from './components/AdminDashboard';
-import { Plus, MapPin, Navigation, Trash2, RefreshCw, Package, ArrowRight, Camera, Search, LayoutGrid, List, Map, Filter, Folder, MoreVertical, LogOut, LogIn, AlertCircle, X, Edit2, User as UserIcon, CheckCircle2, Copy, Share2, ChevronDown, ChevronRight, ShieldCheck } from 'lucide-react';
+import { Plus, MapPin, Navigation, Trash2, RefreshCw, Package, ArrowRight, Camera, Search, LayoutGrid, List, Map, Filter, Folder, MoreVertical, LogOut, LogIn, AlertCircle, X, Edit2, User as UserIcon, CheckCircle2, Copy, Share2, ChevronDown, ChevronRight, ShieldCheck, Truck, Settings, Banknote } from 'lucide-react';
 import { Parcel, UserProfile } from './types';
 import { Scanner } from './components/Scanner';
 import { LegalModal } from './components/LegalModal';
@@ -91,6 +91,7 @@ export default function App() {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [riderName, setRiderName] = useState('');
   const [courierCompany, setCourierCompany] = useState('Shopee Express (SPX)');
+  const [ratePerParcel, setRatePerParcel] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [paymentUrl, setPaymentUrl] = useState<string | null>(null);
 
@@ -184,6 +185,7 @@ export default function App() {
         setProfile(data);
         setRiderName(data.riderName);
         setCourierCompany(data.courierCompany);
+        setRatePerParcel(data.ratePerParcel ? String(data.ratePerParcel) : '');
         setIsAdmin(data.role === 'admin' || user.email === 'bnidigital.my@gmail.com');
 
         // Check subscription status
@@ -266,24 +268,27 @@ export default function App() {
 
     const tracking = sanitize(data.trackingNumber);
     const existing = parcels.find(p => p.trackingNumber === tracking);
-    if (existing) {
-      // Instead of window.confirm which might hang in iframe, we use a simple check
-      // If the user really wants to avoid duplicates, they can delete the old one
-      // For now, let's just allow it but maybe we can add a flag later
-      console.log(`Tracking ${tracking} already exists at Stop #${existing.sequenceNumber}`);
+    
+    // If it exists and was delivered in the last 60 seconds, ignore the scan
+    // This prevents "auto-revert" if the scanner re-triggers after marking delivered
+    if (existing && existing.status === 'delivered' && (Date.now() - (existing.deliveredAt || 0) < 60000)) {
+      console.log("Parcel recently delivered, ignoring duplicate scan.");
+      setIsScannerOpen(false);
+      return;
     }
 
-    const parcelId = typeof crypto.randomUUID === 'function' 
+    const parcelId = existing ? existing.id : (typeof crypto.randomUUID === 'function' 
       ? crypto.randomUUID() 
-      : Date.now().toString(36) + Math.random().toString(36).substring(2);
-    const newParcel: any = {
+      : Date.now().toString(36) + Math.random().toString(36).substring(2));
+
+    const parcelData: any = {
       id: parcelId,
       recipientName: sanitize(data.recipientName) || 'Tiada Nama',
       recipientPhone: sanitize(data.recipientPhone),
       address: data.address,
       trackingNumber: tracking,
-      status: 'pending',
-      sequenceNumber: parcels.length + 1,
+      status: existing ? existing.status : 'pending',
+      sequenceNumber: existing ? existing.sequenceNumber : parcels.length + 1,
       lat: coords.lat,
       lng: coords.lng,
       scannedAt: Date.now(),
@@ -294,7 +299,7 @@ export default function App() {
     };
 
     try {
-      await setDoc(doc(db, 'parcels', parcelId), newParcel);
+      await setDoc(doc(db, 'parcels', parcelId), parcelData, { merge: true });
       
       // Update scan count
       await updateDoc(doc(db, 'profiles', user.uid), {
@@ -367,31 +372,47 @@ export default function App() {
     }
   };
 
-  const handleStatusChange = async (id: string, status: Parcel['status']) => {
+  const markDelivered = useCallback(async (id: string, podPhotoUrl?: string) => {
+    if (!user) return;
     try {
-      const updateData: any = { status };
-      if (status === 'delivered') {
-        updateData.deliveredAt = Date.now();
-      } else {
-        updateData.deliveredAt = null; // Reset if moved back to pending
+      const parcelRef = doc(db, 'parcels', id);
+      const updateData: any = {
+        status: 'delivered',
+        deliveredAt: Date.now(),
+      };
+      if (podPhotoUrl) {
+        updateData.podPhotoUrl = podPhotoUrl;
       }
-      await updateDoc(doc(db, 'parcels', id), updateData);
-      
-      if (status === 'delivered') {
-        const remaining = parcels.filter(p => p.id !== id && p.status !== 'delivered').length;
-        if (remaining === 0) {
-          confetti({
-            particleCount: 150,
-            spread: 100,
-            origin: { y: 0.6 },
-            colors: ['#10b981', '#3b82f6']
-          });
-        }
-      }
-    } catch (e) {
-      handleFirestoreError(e, OperationType.UPDATE, `parcels/${id}`);
+      await updateDoc(parcelRef, updateData);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `parcels/${id}`);
     }
-  };
+  }, [user]);
+
+  const [selectedPODParcel, setSelectedPODParcel] = useState<Parcel | null>(null);
+
+  const onStatusChange = useCallback((id: string, status: Parcel['status']) => {
+    const performUpdate = async () => {
+      try {
+        if (status === 'delivered') {
+          await markDelivered(id);
+        } else {
+          await updateDoc(doc(db, 'parcels', id), { status, deliveredAt: null });
+        }
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, `parcels/${id}`);
+      }
+    };
+    performUpdate();
+  }, [markDelivered]);
+
+  const onMoveClick = useCallback((id: string) => {
+    setParcelOptionsId(id);
+  }, []);
+
+  const onViewPOD = useCallback((parcel: Parcel) => {
+    setSelectedPODParcel(parcel);
+  }, []);
 
   const getCurrentLocation = (): Promise<{ lat: number; lng: number }> => {
     return new Promise((resolve) => {
@@ -520,7 +541,8 @@ export default function App() {
       const profileData: any = {
         uid: user.uid,
         riderName: riderName.trim(),
-        courierCompany: courierCompany.trim()
+        courierCompany: courierCompany.trim(),
+        ratePerParcel: parseFloat(ratePerParcel) || 0
       };
 
       // Initialize trial for brand new profiles
@@ -716,127 +738,68 @@ export default function App() {
     return <LandingPage onStart={handleSignIn} isLoggingIn={isSigningIn} />;
   }
 
+  const deliveredToday = parcels.filter(p => 
+    p.status === 'delivered' && 
+    p.deliveredAt && 
+    new Date(p.deliveredAt).toDateString() === new Date().toDateString()
+  ).length;
+
+  const earningsToday = deliveredToday * (profile?.ratePerParcel || 0);
+
   return (
-    <div className="min-h-screen bg-gray-50 pb-32">
-      {/* iOS PWA Hint */}
-      <AnimatePresence>
-        {showPWAHint && (
-          <motion.div 
-            initial={{ y: -100, opacity: 0 }}
-            animate={{ y: 0, opacity: 1 }}
-            exit={{ y: -100, opacity: 0 }}
-            className="fixed top-4 left-4 right-4 z-[100] bg-blue-600 text-white p-4 rounded-2xl shadow-2xl flex items-center gap-4 border border-blue-400"
-          >
-            <div className="bg-white/20 p-2 rounded-xl">
-              <Share2 size={24} />
-            </div>
-            <div className="flex-1">
-              <p className="text-sm font-black leading-tight">Guna RouteKing Macam App!</p>
-              <p className="text-[10px] opacity-90 font-medium">Klik butang <span className="font-bold">Share</span> dan pilih <span className="font-bold">"Add to Home Screen"</span> untuk pengalaman terbaik.</p>
-            </div>
-            <button 
-              onClick={() => setShowPWAHint(false)}
-              className="p-2 hover:bg-white/10 rounded-full transition-colors"
-            >
-              <X size={20} />
-            </button>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Optimization Loading Overlay */}
-      <AnimatePresence>
-        {isOptimizing && (
-          <motion.div 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/60 backdrop-blur-md z-[100] flex items-center justify-center p-6"
-          >
-            <motion.div 
-              initial={{ scale: 0.9, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              className="bg-white rounded-3xl p-8 max-w-xs w-full text-center space-y-6 shadow-2xl"
-            >
-              <div className="relative w-24 h-24 mx-auto">
-                <div className="absolute inset-0 border-4 border-blue-100 rounded-full" />
-                <motion.div 
-                  animate={{ rotate: 360 }}
-                  transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
-                  className="absolute inset-0 border-4 border-blue-600 rounded-full border-t-transparent"
-                />
-                <div className="absolute inset-0 flex items-center justify-center text-blue-600">
-                  <Navigation size={32} className="animate-pulse" />
-                </div>
-              </div>
-              
-              <div className="space-y-2">
-                <h3 className="text-xl font-black text-gray-900 tracking-tight">Menyusun Laluan</h3>
-                <p className="text-gray-500 font-medium animate-pulse">{optimizingMessage}</p>
-              </div>
-              
-              <div className="pt-4">
-                <div className="w-full bg-gray-100 h-1.5 rounded-full overflow-hidden">
-                  <motion.div 
-                    initial={{ width: "0%" }}
-                    animate={{ width: "100%" }}
-                    transition={{ duration: 15, ease: "linear" }}
-                    className="h-full bg-blue-600"
-                  />
-                </div>
-                <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest mt-3">Sila tunggu sebentar...</p>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Legal Modal */}
-      <LegalModal 
-        isOpen={legalModal.isOpen} 
-        onClose={() => setLegalModal({ ...legalModal, isOpen: false })} 
-        type={legalModal.type} 
-      />
+    <div className="min-h-screen bg-gray-50 flex flex-col pb-24">
       {/* Header */}
-      <header className="bg-white border-b sticky top-0 z-30 px-4 py-4 shadow-sm">
-        <div className="max-w-md mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="bg-blue-600 p-2 rounded-xl text-white shadow-lg shadow-blue-200">
-              <Navigation size={20} className="fill-current" />
+      <header className="bg-blue-600 text-white p-6 pb-12 rounded-b-[40px] shadow-lg relative overflow-hidden">
+        <div className="absolute top-0 right-0 w-64 h-64 bg-blue-500 rounded-full -mr-20 -mt-20 opacity-50 blur-3xl"></div>
+        <div className="relative z-10">
+          <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 bg-white/20 backdrop-blur-md rounded-2xl flex items-center justify-center border border-white/30 shadow-xl">
+                <Truck size={28} className="text-white" />
+              </div>
+              <div>
+                <h1 className="text-2xl font-black tracking-tight leading-none">RouteKing</h1>
+                <p className="text-blue-100 text-[10px] font-bold uppercase tracking-widest mt-1">Smart Delivery Assistant</p>
+              </div>
             </div>
-            <div>
-              <h1 className="font-black text-xl text-gray-900 tracking-tight leading-none">RouteKing</h1>
-              <p className="text-[10px] font-bold text-blue-600 uppercase tracking-widest mt-1">Courier Edition</p>
+            <div className="flex items-center gap-2">
+              {profile?.role === 'admin' && (
+                <button 
+                  onClick={() => setIsAdminDashboardOpen(true)}
+                  className="p-2 bg-white/10 hover:bg-white/20 rounded-xl transition-all border border-white/20"
+                >
+                  <ShieldCheck size={20} />
+                </button>
+              )}
+              <button 
+                onClick={() => setIsProfileModalOpen(true)}
+                className="p-2 bg-white/10 hover:bg-white/20 rounded-xl transition-all border border-white/20"
+              >
+                <Settings size={20} />
+              </button>
             </div>
           </div>
-          
-          <div className="flex items-center gap-1 sm:gap-2">
-            <button 
-              onClick={confirmClearAll}
-              className="p-2 text-gray-400 hover:text-red-500 transition-colors"
-              title="Padam Semua"
-            >
-              <Trash2 size={20} />
-            </button>
-            {user && (
-              <>
-                <button 
-                  onClick={() => setIsProfileModalOpen(true)}
-                  className="p-2 text-gray-400 hover:text-blue-600 transition-colors flex items-center gap-1.5"
-                  title="Profile Rider"
-                >
-                  <UserIcon size={20} />
-                  <span className="hidden sm:inline text-[10px] font-black uppercase tracking-tighter max-w-[60px] truncate">{riderName || 'Setup'}</span>
-                </button>
-                <button 
-                  onClick={logout}
-                  className="p-2 text-gray-400 hover:text-red-600 transition-colors"
-                  title="Logout"
-                >
-                  <LogOut size={20} />
-                </button>
-              </>
-            )}
+
+          {/* Earnings & Stats Card */}
+          <div className="bg-white rounded-3xl p-5 shadow-2xl border border-blue-100 flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <div className="w-14 h-14 bg-green-50 rounded-2xl flex items-center justify-center text-green-600 border border-green-100">
+                <Banknote size={32} />
+              </div>
+              <div>
+                <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest leading-none mb-1">Gaji Hari Ini</p>
+                <h2 className="text-2xl font-black text-gray-900 leading-none">RM {earningsToday.toFixed(2)}</h2>
+                <p className="text-[10px] font-bold text-green-600 mt-1">
+                  {deliveredToday} Parcel Selesai
+                </p>
+              </div>
+            </div>
+            <div className="text-right">
+              <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest leading-none mb-1">Baki Parcel</p>
+              <h2 className="text-xl font-black text-blue-600 leading-none">
+                {parcels.filter(p => p.status === 'pending').length}
+              </h2>
+            </div>
           </div>
         </div>
       </header>
@@ -970,8 +933,8 @@ export default function App() {
                   </>
                 ) : (
                   <>
-                    <RefreshCw size={18} />
-                    Susun Semua (Global)
+                    <Navigation size={18} />
+                    Susun Laluan
                   </>
                 )}
               </button>
@@ -988,6 +951,15 @@ export default function App() {
                 {viewMode === 'list' && <LayoutGrid size={20} />}
                 {viewMode === 'grid' && <Map size={20} />}
                 {viewMode === 'map' && <List size={20} />}
+              </button>
+
+              <button
+                onClick={confirmClearAll}
+                disabled={parcels.length === 0}
+                className="p-3 bg-red-50 text-red-600 border-2 border-red-100 rounded-2xl hover:bg-red-100 transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed w-12 flex items-center justify-center"
+                title="Padam Semua"
+              >
+                <Trash2 size={20} />
               </button>
             </div>
 
@@ -1141,8 +1113,9 @@ export default function App() {
                           key={parcel.id} 
                           parcel={parcel} 
                           profile={profile}
-                          onStatusChange={handleStatusChange}
-                          onMoveClick={() => setParcelOptionsId(parcel.id)}
+                          onStatusChange={onStatusChange}
+                          onMoveClick={() => onMoveClick(parcel.id)}
+                          onViewPOD={onViewPOD}
                         />
                       ))}
                       {folderParcels.length === 0 && folder !== 'Tiada Folder' && (
@@ -1216,10 +1189,62 @@ export default function App() {
             <NavigationMode 
               parcels={navigationFolder ? parcels.filter(p => (p.folder || 'Tiada Folder') === navigationFolder) : parcels}
               profile={profile}
-              onMarkDelivered={(id) => handleStatusChange(id, 'delivered')}
+              onMarkDelivered={(id, podPhotoUrl) => markDelivered(id, podPhotoUrl)}
               onClose={() => setIsNavigationModeOpen(false)}
             />
           )}
+
+          {/* Optimization Loading Overlay */}
+          <AnimatePresence>
+            {isOptimizing && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="fixed inset-0 bg-blue-600/95 z-[200] flex flex-col items-center justify-center p-8 backdrop-blur-md text-white text-center"
+              >
+                <div className="relative mb-8">
+                  <motion.div
+                    animate={{ 
+                      scale: [1, 1.2, 1],
+                      rotate: [0, 180, 360]
+                    }}
+                    transition={{ 
+                      duration: 3,
+                      repeat: Infinity,
+                      ease: "easeInOut"
+                    }}
+                    className="w-24 h-24 border-4 border-white/30 border-t-white rounded-full"
+                  />
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <Navigation size={32} className="text-white animate-pulse" />
+                  </div>
+                </div>
+                
+                <h3 className="text-2xl font-black tracking-tight mb-2">Sistem Sedang Berfikir...</h3>
+                <p className="text-blue-100 font-bold animate-pulse tracking-wide uppercase text-xs">
+                  {optimizingMessage}
+                </p>
+                
+                <div className="mt-12 max-w-xs w-full bg-white/10 rounded-full h-1.5 overflow-hidden">
+                  <motion.div 
+                    initial={{ x: "-100%" }}
+                    animate={{ x: "100%" }}
+                    transition={{ 
+                      duration: 1.5,
+                      repeat: Infinity,
+                      ease: "linear"
+                    }}
+                    className="w-full h-full bg-white shadow-[0_0_15px_rgba(255,255,255,0.5)]"
+                  />
+                </div>
+                
+                <p className="mt-8 text-[10px] font-black text-blue-200 uppercase tracking-[0.2em] opacity-50">
+                  RouteKing AI Optimizer v1.0
+                </p>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
         <AnimatePresence>
           {/* Parcel Options Modal */}
@@ -1526,16 +1551,16 @@ export default function App() {
 
           {/* Profile Modal */}
           {isProfileModalOpen && (
-            <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+            <div className="fixed inset-0 bg-black/60 z-50 overflow-y-auto p-4 backdrop-blur-sm flex justify-center items-start sm:items-center py-8">
               <motion.div 
                 initial={{ scale: 0.9, opacity: 0 }}
                 animate={{ scale: 1, opacity: 1 }}
-                className="bg-white w-full max-w-md rounded-[2.5rem] p-8 shadow-2xl relative overflow-hidden"
+                className="bg-white w-full max-w-md rounded-[2.5rem] shadow-2xl relative overflow-hidden my-auto"
               >
                 <div className="absolute top-0 right-0 -mr-12 -mt-12 w-40 h-40 bg-blue-50 rounded-full" />
                 
                 <div className="relative z-10">
-                  <div className="flex items-center justify-between mb-8">
+                  <div className="p-8 pb-4 flex items-center justify-between">
                     <div>
                       <h3 className="font-black text-2xl text-gray-900 tracking-tight">Profile Rider</h3>
                       <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mt-1">Konfigurasi Akaun</p>
@@ -1545,7 +1570,7 @@ export default function App() {
                     </button>
                   </div>
 
-                  <div className="space-y-6">
+                  <div className="p-8 pt-0 space-y-6">
                     <div className="space-y-2">
                       <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest px-1">Nama Rider</label>
                       <div className="relative">
@@ -1569,6 +1594,21 @@ export default function App() {
                           value={courierCompany}
                           onChange={(e) => setCourierCompany(e.target.value)}
                           placeholder="Contoh: Shopee Express (SPX)"
+                          className="w-full border-2 border-gray-100 bg-gray-50/50 rounded-2xl py-4 pl-12 pr-4 font-bold text-gray-800 focus:border-blue-500 focus:bg-white outline-none transition-all"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest px-1">Kadar Per Parcel (RM)</label>
+                      <div className="relative">
+                        <Banknote className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+                        <input 
+                          type="number" 
+                          step="0.01"
+                          value={ratePerParcel}
+                          onChange={(e) => setRatePerParcel(e.target.value)}
+                          placeholder="Contoh: 1.20"
                           className="w-full border-2 border-gray-100 bg-gray-50/50 rounded-2xl py-4 pl-12 pr-4 font-bold text-gray-800 focus:border-blue-500 focus:bg-white outline-none transition-all"
                         />
                       </div>
@@ -1640,42 +1680,55 @@ export default function App() {
                       </button>
                     )}
 
-                    <button 
-                      onClick={handleSaveProfile}
-                      disabled={isSavingProfile || saveSuccess}
-                      className={cn(
-                        "w-full py-5 text-white font-black rounded-2xl shadow-xl transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-3 text-lg",
-                        saveSuccess ? "bg-green-600 shadow-green-100" : "bg-blue-600 hover:bg-blue-700 shadow-blue-100"
-                      )}
-                    >
-                      {isSavingProfile ? (
-                        <>
-                          <RefreshCw className="animate-spin" size={24} />
-                          Menyimpan...
-                        </>
-                      ) : saveSuccess ? (
-                        <>
-                          <CheckCircle2 size={24} />
-                          Berjaya!
-                        </>
-                      ) : (
-                        'Simpan Profile'
-                      )}
-                    </button>
+                    <div className="pt-4 space-y-3 border-t border-gray-100">
+                      <button 
+                        onClick={handleSaveProfile}
+                        disabled={isSavingProfile || saveSuccess}
+                        className={cn(
+                          "w-full py-5 text-white font-black rounded-2xl shadow-xl transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-3 text-lg",
+                          saveSuccess ? "bg-green-600 shadow-green-100" : "bg-blue-600 hover:bg-blue-700 shadow-blue-100"
+                        )}
+                      >
+                        {isSavingProfile ? (
+                          <>
+                            <RefreshCw className="animate-spin" size={24} />
+                            Menyimpan...
+                          </>
+                        ) : saveSuccess ? (
+                          <>
+                            <CheckCircle2 size={24} />
+                            Berjaya!
+                          </>
+                        ) : (
+                          'Simpan Profile'
+                        )}
+                      </button>
 
-                    <div className="flex justify-center gap-4 pt-4 border-t border-gray-100">
                       <button 
-                        onClick={() => setLegalModal({ isOpen: true, type: 'privacy' })}
-                        className="text-[10px] font-black text-gray-400 uppercase tracking-widest hover:text-blue-600 transition-colors"
+                        onClick={() => {
+                          setIsProfileModalOpen(false);
+                          logout();
+                        }}
+                        className="w-full py-4 text-gray-400 font-bold text-sm hover:text-red-500 transition-colors flex items-center justify-center gap-2"
                       >
-                        Dasar Privasi
+                        <LogOut size={16} />
+                        Log Keluar Akaun
                       </button>
-                      <button 
-                        onClick={() => setLegalModal({ isOpen: true, type: 'terms' })}
-                        className="text-[10px] font-black text-gray-400 uppercase tracking-widest hover:text-blue-600 transition-colors"
-                      >
-                        Terma & Syarat
-                      </button>
+
+                      <div className="flex justify-center gap-4 pt-4 border-t border-gray-100">
+                        <button 
+                          onClick={() => setLegalModal({ isOpen: true, type: 'privacy' })}
+                          className="text-[10px] font-black text-gray-400 uppercase tracking-widest hover:text-blue-600 transition-colors"
+                        >
+                          Dasar Privasi
+                        </button>
+                        <button 
+                          onClick={() => setLegalModal({ isOpen: true, type: 'terms' })}
+                          className="text-[10px] font-black text-gray-400 uppercase tracking-widest hover:text-blue-600 transition-colors"
+                        >
+                          Terma & Syarat
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1698,15 +1751,15 @@ export default function App() {
 
       {/* Subscription Modal */}
       {isSubscriptionModalOpen && (
-        <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-md">
+        <div className="fixed inset-0 bg-black/80 z-[100] overflow-y-auto p-4 backdrop-blur-md flex justify-center items-start sm:items-center py-8">
           <motion.div 
             initial={{ scale: 0.9, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
-            className="bg-white w-full max-w-md rounded-[2.5rem] p-8 shadow-2xl relative overflow-hidden"
+            className="bg-white w-full max-w-md rounded-[2.5rem] shadow-2xl relative overflow-hidden my-auto"
           >
             <div className="absolute top-0 right-0 -mr-12 -mt-12 w-40 h-40 bg-blue-50 rounded-full" />
             
-            <div className="relative z-10 text-center space-y-6">
+            <div className="relative z-10 text-center p-8 space-y-6">
               {isSavingProfile ? (
                 <div className="py-20 flex flex-col items-center justify-center space-y-4">
                   <RefreshCw className="animate-spin text-blue-600" size={48} />
@@ -1850,6 +1903,53 @@ export default function App() {
           </motion.div>
         </div>
       )}
+      <AnimatePresence>
+        {selectedPODParcel && selectedPODParcel.podPhotoUrl && (
+          <div 
+            className="fixed inset-0 z-[200] bg-black/90 flex items-center justify-center p-4 backdrop-blur-sm"
+            onClick={() => setSelectedPODParcel(null)}
+          >
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="relative w-full max-w-md bg-white rounded-3xl overflow-hidden shadow-2xl"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="absolute top-4 right-4 z-10">
+                <button 
+                  onClick={() => setSelectedPODParcel(null)}
+                  className="p-2 bg-black/20 hover:bg-black/40 text-white rounded-full backdrop-blur-md transition-colors"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+              <img 
+                src={selectedPODParcel.podPhotoUrl} 
+                alt="Proof of Delivery" 
+                className="w-full h-auto max-h-[70vh] object-contain bg-gray-100"
+                referrerPolicy="no-referrer"
+              />
+              <div className="p-6 bg-white">
+                <div className="flex items-center gap-3 mb-2">
+                  <div className="bg-green-100 text-green-600 p-2 rounded-xl">
+                    <CheckCircle2 size={20} />
+                  </div>
+                  <div>
+                    <h3 className="font-black text-gray-900 leading-none">Bukti Penghantaran</h3>
+                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mt-1">
+                      {selectedPODParcel.trackingNumber}
+                    </p>
+                  </div>
+                </div>
+                <p className="text-xs text-gray-500 font-medium leading-relaxed">
+                  Gambar ini disimpan sebagai bukti parcel telah selamat sampai ke tangan penerima.
+                </p>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

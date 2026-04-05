@@ -4,6 +4,7 @@ import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import { Parcel } from '../types';
 import { Navigation, MapPin } from 'lucide-react';
+import { getGoogleMapsLetter } from '../lib/utils';
 
 // Fix Leaflet's default icon path issues in React
 delete (L.Icon.Default.prototype as any)._getIconUrl;
@@ -16,12 +17,16 @@ L.Icon.Default.mergeOptions({
 // Custom numbered icon generator
 const createNumberedIcon = (number: number, status: Parcel['status']) => {
   const bgColor = status === 'delivered' ? 'bg-green-500' : status === 'failed' ? 'bg-red-500' : 'bg-blue-600';
+  const letter = getGoogleMapsLetter(number);
   return L.divIcon({
     className: 'custom-div-icon',
-    html: `<div class="${bgColor} text-white font-bold rounded-full w-8 h-8 flex items-center justify-center border-2 border-white shadow-md text-sm">${number}</div>`,
-    iconSize: [32, 32],
-    iconAnchor: [16, 16],
-    popupAnchor: [0, -16]
+    html: `<div class="${bgColor} text-white font-bold rounded-full w-10 h-10 flex flex-col items-center justify-center border-2 border-white shadow-md">
+            <span class="text-xs leading-none">${number}</span>
+            <span class="text-[9px] leading-none opacity-80 font-black">${letter}</span>
+           </div>`,
+    iconSize: [40, 40],
+    iconAnchor: [20, 20],
+    popupAnchor: [0, -20]
   });
 };
 
@@ -64,6 +69,22 @@ export function MapPreview({ parcels, startPoint }: MapPreviewProps) {
   ];
 
   const allPositions = routePositions;
+
+  const openInGoogleMaps = () => {
+    if (parcels.length === 0) return;
+
+    const sortedParcels = [...parcels].sort((a, b) => a.sequenceNumber - b.sequenceNumber);
+    const origin = `${startPoint.lat},${startPoint.lng}`;
+    const destination = `${sortedParcels[sortedParcels.length - 1].lat},${sortedParcels[sortedParcels.length - 1].lng}`;
+    
+    // Waypoints are all parcels except the last one (which is the destination)
+    const waypoints = sortedParcels.slice(0, -1)
+      .map(p => `${p.lat},${p.lng}`)
+      .join('|');
+
+    const url = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}${waypoints ? `&waypoints=${encodeURIComponent(waypoints)}` : ''}&travelmode=driving`;
+    window.open(url, '_blank');
+  };
 
   if (parcels.length === 0) {
     return (
@@ -139,6 +160,15 @@ export function MapPreview({ parcels, startPoint }: MapPreviewProps) {
         />
       </MapContainer>
       
+      {/* Google Maps Route Button */}
+      <button
+        onClick={openInGoogleMaps}
+        className="absolute top-4 right-4 bg-white/90 backdrop-blur-sm p-3 rounded-xl shadow-lg border border-gray-100 z-[1000] flex items-center gap-2 text-blue-600 font-black text-[10px] uppercase tracking-wider hover:bg-white transition-all active:scale-95"
+      >
+        <Navigation size={14} />
+        Buka Laluan (G-Maps)
+      </button>
+
       {/* Legend overlay */}
       <div className="absolute bottom-4 left-4 bg-white/90 backdrop-blur-sm p-3 rounded-xl shadow-lg border border-gray-100 z-[1000] text-xs font-bold space-y-2">
         <div className="flex items-center gap-2">

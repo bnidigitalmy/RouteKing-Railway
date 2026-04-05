@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { Parcel, UserProfile } from '../types';
 import { MapContainer, TileLayer, Marker, useMap } from 'react-leaflet';
-import { X, Map as MapIcon, Navigation, CheckCircle, Package, Banknote, MessageSquare, Phone } from 'lucide-react';
+import { X, Map as MapIcon, Navigation, CheckCircle, Package, Banknote, MessageSquare, Phone, Camera, Loader2 } from 'lucide-react';
 import L from 'leaflet';
+import { getGoogleMapsLetter } from '../lib/utils';
 
 // Fix Leaflet's default icon path issues in React
 delete (L.Icon.Default.prototype as any)._getIconUrl;
@@ -32,12 +33,16 @@ function MapUpdater({ center }: { center: [number, number] }) {
 interface NavigationModeProps {
   parcels: Parcel[];
   profile?: UserProfile | null;
-  onMarkDelivered: (id: string) => void;
+  onMarkDelivered: (id: string, podPhotoUrl?: string) => void;
   onClose: () => void;
 }
 
 export function NavigationMode({ parcels, profile, onMarkDelivered, onClose }: NavigationModeProps) {
   const [currentIndex, setCurrentIndex] = useState(0);
+  const [isCapturingPOD, setIsCapturingPOD] = useState(false);
+  const [isUploadingPOD, setIsUploadingPOD] = useState(false);
+  const [podPhoto, setPodPhoto] = useState<string | null>(null);
+  const podInputRef = useRef<HTMLInputElement>(null);
   
   // Only navigate through parcels that were pending when we started
   const [route] = useState(() => 
@@ -65,8 +70,25 @@ export function NavigationMode({ parcels, profile, onMarkDelivered, onClose }: N
   const currentParcel = route[currentIndex];
 
   const handleDelivered = () => {
-    onMarkDelivered(currentParcel.id);
+    onMarkDelivered(currentParcel.id, podPhoto || undefined);
+    setPodPhoto(null);
     setCurrentIndex(prev => prev + 1);
+  };
+
+  const handlePODCapture = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsUploadingPOD(true);
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const base64 = event.target?.result as string;
+      // In a real app, we would upload to Firebase Storage
+      // For now, we'll just store the base64 string (not ideal for large images but works for demo)
+      setPodPhoto(base64);
+      setIsUploadingPOD(false);
+    };
+    reader.readAsDataURL(file);
   };
 
   const openGoogleMaps = () => {
@@ -93,7 +115,13 @@ export function NavigationMode({ parcels, profile, onMarkDelivered, onClose }: N
     }
 
     const riderInfo = profile?.riderName ? `${profile.riderName} (${profile.courierCompany || 'SPX'})` : 'rider Shopee Express (SPX)';
-    const message = encodeURIComponent(`Hai, saya ${riderInfo}. Parcel anda (${currentParcel.trackingNumber}) akan sampai dalam 10 minit! Sila sedia ya. Terima kasih.`);
+    
+    let codText = '';
+    if (currentParcel.isCOD && currentParcel.codAmount) {
+      codText = ` Sila sediakan wang tunai RM${currentParcel.codAmount.toFixed(2)} untuk bayaran COD ya.`;
+    }
+
+    const message = encodeURIComponent(`Hai, saya ${riderInfo}. Parcel anda (${currentParcel.trackingNumber}) akan sampai dalam 10 minit!${codText} Sila sedia ya. Terima kasih.`);
     const url = `https://wa.me/${phone}?text=${message}`;
     window.open(url, '_blank');
   };
@@ -104,7 +132,9 @@ export function NavigationMode({ parcels, profile, onMarkDelivered, onClose }: N
       <div className="bg-white px-4 py-4 border-b flex items-center justify-between shadow-sm z-10">
         <div>
           <p className="text-xs font-bold text-blue-600 uppercase tracking-widest mb-1">Stop {currentIndex + 1} / {route.length}</p>
-          <h2 className="text-xl font-black text-gray-900 leading-none">#{currentParcel.sequenceNumber} - {currentParcel.trackingNumber}</h2>
+          <h2 className="text-xl font-black text-gray-900 leading-none">
+            #{currentParcel.sequenceNumber} ({getGoogleMapsLetter(currentParcel.sequenceNumber)}) - {currentParcel.trackingNumber}
+          </h2>
         </div>
         <button 
           onClick={onClose} 
@@ -203,13 +233,48 @@ export function NavigationMode({ parcels, profile, onMarkDelivered, onClose }: N
           </div>
         )}
 
-        <button 
-          onClick={handleDelivered} 
-          className="w-full bg-green-600 hover:bg-green-700 text-white font-black py-4 rounded-2xl shadow-[0_8px_30px_rgba(22,163,74,0.3)] active:scale-95 transition-all text-lg flex items-center justify-center gap-2"
-        >
-          <CheckCircle size={24} />
-          TANDAKAN SELESAI
-        </button>
+        <div className="flex flex-col gap-2">
+          {podPhoto ? (
+            <div className="relative w-full h-24 rounded-xl overflow-hidden border-2 border-green-500 animate-in zoom-in">
+              <img src={podPhoto} alt="POD" className="w-full h-full object-cover" />
+              <button 
+                onClick={() => setPodPhoto(null)}
+                className="absolute top-1 right-1 bg-red-500 text-white p-1 rounded-full shadow-lg"
+              >
+                <X size={14} />
+              </button>
+              <div className="absolute bottom-0 inset-x-0 bg-green-500 text-white text-[10px] font-bold text-center py-0.5">
+                GAMBAR POD SEDIA
+              </div>
+            </div>
+          ) : (
+            <button 
+              onClick={() => podInputRef.current?.click()}
+              disabled={isUploadingPOD}
+              className="w-full bg-gray-100 hover:bg-gray-200 text-gray-600 font-bold py-3 rounded-xl border-2 border-dashed border-gray-300 active:scale-95 transition-all flex items-center justify-center gap-2"
+            >
+              {isUploadingPOD ? <Loader2 className="animate-spin" size={20} /> : <Camera size={20} />}
+              AMBIL GAMBAR POD (OPSYENAL)
+            </button>
+          )}
+
+          <button 
+            onClick={handleDelivered} 
+            className="w-full bg-green-600 hover:bg-green-700 text-white font-black py-4 rounded-2xl shadow-[0_8px_30px_rgba(22,163,74,0.3)] active:scale-95 transition-all text-lg flex items-center justify-center gap-2"
+          >
+            <CheckCircle size={24} />
+            TANDAKAN SELESAI
+          </button>
+        </div>
+
+        <input 
+          type="file" 
+          accept="image/*" 
+          capture="environment" 
+          className="hidden" 
+          ref={podInputRef}
+          onChange={handlePODCapture}
+        />
       </div>
     </div>
   );

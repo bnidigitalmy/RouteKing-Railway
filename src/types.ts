@@ -10,6 +10,7 @@ export interface Parcel {
   lng?: number;
   scannedAt: number;
   deliveredAt?: number;
+  podPhotoUrl?: string;
   isCOD?: boolean;
   codAmount?: number;
   groupTag?: string;
@@ -24,6 +25,7 @@ export interface UserProfile {
   email?: string;
   role?: 'admin' | 'user';
   isPro?: boolean;
+  ratePerParcel?: number;
   trialStartedAt?: number;
   expiryDate?: number;
   subscriptionType?: 'monthly' | 'yearly';
