@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { LandingPage } from './components/LandingPage';
 import { AdminDashboard } from './components/AdminDashboard';
-import { Plus, MapPin, Navigation, Trash2, RefreshCw, Package, ArrowRight, Camera, Search, LayoutGrid, List, Map, Filter, Folder, MoreVertical, LogOut, LogIn, AlertCircle, X, Edit2, User as UserIcon, CheckCircle2, Copy, Share2, ChevronDown, ChevronRight, ShieldCheck, Truck, Settings, Banknote } from 'lucide-react';
+import { Plus, MapPin, Navigation, Trash2, RefreshCw, Package, ArrowRight, Camera, Search, LayoutGrid, List, Map, Filter, Folder, MoreVertical, LogOut, LogIn, AlertCircle, X, Edit2, User as UserIcon, CheckCircle2, Copy, Share2, ChevronDown, ChevronRight, ShieldCheck, Truck, Settings, Banknote, HelpCircle } from 'lucide-react';
 import { Parcel, UserProfile } from './types';
 import { Scanner } from './components/Scanner';
 import { LegalModal } from './components/LegalModal';
@@ -10,6 +10,7 @@ import { ParcelCard } from './components/ParcelCard';
 import { Stats } from './components/Stats';
 import { MapPreview } from './components/MapPreview';
 import { NavigationMode } from './components/NavigationMode';
+import { UserGuide } from './components/UserGuide';
 import { optimizeRoute } from './lib/optimizer';
 import { getCoordinates } from './lib/gemini';
 import { cn } from './lib/utils';
@@ -23,6 +24,7 @@ import {
   collection, 
   doc, 
   setDoc, 
+  getDoc,
   getDocs,
   updateDoc, 
   deleteDoc, 
@@ -46,6 +48,7 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [parcels, setParcels] = useState<Parcel[]>([]);
+  const [isUserGuideOpen, setIsUserGuideOpen] = useState(false);
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [isNavigationModeOpen, setIsNavigationModeOpen] = useState(false);
   const [navigationFolder, setNavigationFolder] = useState<string | null>(null);
@@ -76,6 +79,8 @@ export default function App() {
   const [isMarkingModeOpen, setIsMarkingModeOpen] = useState(false);
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const [collapsedFolders, setCollapsedFolders] = useState<Record<string, boolean>>({});
+  const [isQuickFindOpen, setIsQuickFindOpen] = useState(false);
+  const [quickFindQuery, setQuickFindQuery] = useState('');
   const [legalModal, setLegalModal] = useState<{ isOpen: boolean; type: 'privacy' | 'terms' }>({
     isOpen: false,
     type: 'privacy'
@@ -227,6 +232,10 @@ export default function App() {
     };
   }, [user]);
 
+  const getAddressHash = (address: string) => {
+    return address.toLowerCase().replace(/[^a-z0-9]/g, '');
+  };
+
   const handleScan = async (data: { recipientName?: string; recipientPhone?: string; address: string; trackingNumber: string; isCOD?: boolean; codAmount?: number; groupTag?: string }) => {
     if (!user || !profile) return;
 
@@ -257,7 +266,24 @@ export default function App() {
       return;
     }
 
-    const coords = await getCoordinates(data.address);
+    let coords = await getCoordinates(data.address);
+    let verifiedNotes = '';
+    let isVerified = false;
+
+    // Check for verified address memory
+    try {
+      const addressHash = getAddressHash(data.address);
+      const verifiedRef = doc(db, 'users', user.uid, 'verified_addresses', addressHash);
+      const verifiedSnap = await getDoc(verifiedRef);
+      if (verifiedSnap.exists()) {
+        const vData = verifiedSnap.data();
+        coords = { lat: vData.lat, lng: vData.lng };
+        verifiedNotes = vData.addressNotes || '';
+        isVerified = true;
+      }
+    } catch (e) {
+      console.error("Error checking verified address:", e);
+    }
     
     const sanitize = (val: any) => {
       if (val === null || val === undefined || String(val).toLowerCase() === 'null' || String(val).toLowerCase() === 'undefined') {
@@ -267,14 +293,18 @@ export default function App() {
     };
 
     const tracking = sanitize(data.trackingNumber);
+    if (!tracking) {
+      setError("Tracking number tidak dikesan. Sila cuba lagi.");
+      return;
+    }
+
     const existing = parcels.find(p => p.trackingNumber === tracking);
     
-    // If it exists and was delivered in the last 60 seconds, ignore the scan
-    // This prevents "auto-revert" if the scanner re-triggers after marking delivered
-    if (existing && existing.status === 'delivered' && (Date.now() - (existing.deliveredAt || 0) < 60000)) {
-      console.log("Parcel recently delivered, ignoring duplicate scan.");
-      setIsScannerOpen(false);
-      return;
+    if (existing) {
+      // Throw error so Scanner can catch and display it
+      const errorMsg = `Tracking number ${tracking} sudah ada dalam senarai!`;
+      setError(errorMsg);
+      throw new Error(errorMsg);
     }
 
     const parcelId = existing ? existing.id : (typeof crypto.randomUUID === 'function' 
@@ -291,6 +321,8 @@ export default function App() {
       sequenceNumber: existing ? existing.sequenceNumber : parcels.length + 1,
       lat: coords.lat,
       lng: coords.lng,
+      isLocationVerified: isVerified,
+      addressNotes: verifiedNotes,
       scannedAt: Date.now(),
       isCOD: !!data.isCOD,
       codAmount: data.codAmount || 0,
@@ -723,6 +755,15 @@ export default function App() {
     });
   }, [parcels, searchQuery, filterStatus, filterCOD, filterGroup]);
 
+  const quickFindResults = React.useMemo(() => {
+    if (!quickFindQuery.trim()) return [];
+    const query = quickFindQuery.toLowerCase();
+    return parcels.filter(p => 
+      p.recipientName?.toLowerCase().includes(query) || 
+      p.trackingNumber.toLowerCase().includes(query)
+    ).slice(0, 3);
+  }, [parcels, quickFindQuery]);
+
   if (isAuthLoading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
@@ -763,6 +804,13 @@ export default function App() {
               </div>
             </div>
             <div className="flex items-center gap-2">
+              <button 
+                onClick={() => setIsQuickFindOpen(true)}
+                className="p-2 bg-orange-500 hover:bg-orange-600 rounded-xl transition-all border border-orange-400 shadow-lg flex items-center gap-2"
+              >
+                <Search size={20} />
+                <span className="text-xs font-black uppercase">Cari Stop</span>
+              </button>
               {profile?.role === 'admin' && (
                 <button 
                   onClick={() => setIsAdminDashboardOpen(true)}
@@ -771,6 +819,13 @@ export default function App() {
                   <ShieldCheck size={20} />
                 </button>
               )}
+              <button 
+                onClick={() => setIsUserGuideOpen(true)}
+                className="p-2 bg-white/10 hover:bg-white/20 rounded-xl transition-all border border-white/20"
+                title="Panduan Pengguna"
+              >
+                <HelpCircle size={20} />
+              </button>
               <button 
                 onClick={() => setIsProfileModalOpen(true)}
                 className="p-2 bg-white/10 hover:bg-white/20 rounded-xl transition-all border border-white/20"
@@ -1160,6 +1215,10 @@ export default function App() {
           </div>
 
           {/* Scanner Modal */}
+          {isUserGuideOpen && (
+            <UserGuide onClose={() => setIsUserGuideOpen(false)} />
+          )}
+
           {isScannerOpen && (
             <Scanner 
               onScan={handleScan} 
@@ -1190,6 +1249,36 @@ export default function App() {
               parcels={navigationFolder ? parcels.filter(p => (p.folder || 'Tiada Folder') === navigationFolder) : parcels}
               profile={profile}
               onMarkDelivered={(id, podPhotoUrl) => markDelivered(id, podPhotoUrl)}
+              onUpdateParcel={async (id, data) => {
+                try {
+                  await updateDoc(doc(db, 'parcels', id), data);
+
+                  // If updating location or notes, also update verified_addresses memory
+                  if (data.isLocationVerified || data.addressNotes !== undefined) {
+                    const parcel = parcels.find(p => p.id === id);
+                    if (parcel && user) {
+                      const addressHash = getAddressHash(parcel.address);
+                      const verifiedRef = doc(db, 'users', user.uid, 'verified_addresses', addressHash);
+                      
+                      // Get current verified data to merge
+                      const verifiedSnap = await getDoc(verifiedRef);
+                      const currentVData = verifiedSnap.exists() ? verifiedSnap.data() : {};
+
+                      await setDoc(verifiedRef, {
+                        ...currentVData,
+                        address: parcel.address,
+                        lat: data.lat || parcel.lat || 0,
+                        lng: data.lng || parcel.lng || 0,
+                        addressNotes: data.addressNotes !== undefined ? data.addressNotes : (currentVData.addressNotes || ''),
+                        uid: user.uid,
+                        updatedAt: Date.now()
+                      }, { merge: true });
+                    }
+                  }
+                } catch (e) {
+                  handleFirestoreError(e, OperationType.UPDATE, `parcels/${id}`);
+                }
+              }}
               onClose={() => setIsNavigationModeOpen(false)}
             />
           )}
@@ -1903,6 +1992,68 @@ export default function App() {
           </motion.div>
         </div>
       )}
+      <AnimatePresence>
+        {isQuickFindOpen && (
+          <div className="fixed inset-0 z-[150] bg-black/80 backdrop-blur-md flex items-center justify-center p-4" onClick={() => setIsQuickFindOpen(false)}>
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white w-full max-w-md rounded-[2.5rem] p-8 shadow-2xl"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between mb-6">
+                <h3 className="text-2xl font-black text-gray-900 tracking-tight">Cari Nombor Stop</h3>
+                <button onClick={() => setIsQuickFindOpen(false)} className="p-2 bg-gray-100 rounded-full">
+                  <X size={20} />
+                </button>
+              </div>
+
+              <div className="relative mb-6">
+                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
+                <input 
+                  autoFocus
+                  type="text"
+                  placeholder="Taip Nama atau Tracking..."
+                  value={quickFindQuery}
+                  onChange={(e) => setQuickFindQuery(e.target.value)}
+                  className="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl py-4 pl-12 pr-4 font-bold text-lg focus:border-orange-500 focus:ring-0 outline-none transition-all"
+                />
+              </div>
+
+              <div className="space-y-4">
+                {quickFindResults.length > 0 ? (
+                  quickFindResults.map(p => (
+                    <div key={p.id} className="bg-orange-50 border-2 border-orange-100 rounded-3xl p-6 flex items-center justify-between animate-in fade-in slide-in-from-bottom-2">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-[10px] font-black text-orange-400 uppercase tracking-widest mb-1">{p.trackingNumber}</p>
+                        <h4 className="font-black text-gray-900 text-lg truncate">{p.recipientName}</h4>
+                        <p className="text-xs text-gray-500 font-medium truncate">{p.address}</p>
+                      </div>
+                      <div className="flex flex-col items-center ml-4">
+                        <p className="text-[10px] font-black text-orange-500 uppercase mb-1">STOP #</p>
+                        <div className="w-20 h-20 bg-orange-500 text-white rounded-2xl flex items-center justify-center text-4xl font-black shadow-lg shadow-orange-200">
+                          {p.sequenceNumber}
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                ) : quickFindQuery ? (
+                  <div className="text-center py-12 text-gray-400">
+                    <AlertCircle size={48} className="mx-auto mb-3 opacity-20" />
+                    <p className="font-bold">Parcel tidak dijumpai.</p>
+                  </div>
+                ) : (
+                  <div className="text-center py-12 text-gray-400">
+                    <p className="text-sm font-medium">Sila masukkan maklumat untuk mencari.</p>
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
       <AnimatePresence>
         {selectedPODParcel && selectedPODParcel.podPhotoUrl && (
           <div 

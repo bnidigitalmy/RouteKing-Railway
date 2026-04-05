@@ -58,6 +58,10 @@
     "/geocache/{addressHash}": {
       "schema": "geocache",
       "description": "Cached geocoding results"
+    },
+    "/users/{userId}/verified_addresses/{addressHash}": {
+      "schema": "geocache",
+      "description": "User-specific verified addresses with notes"
     }
   }
 }

@@ -132,6 +132,14 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    match /users/{userId}/verified_addresses/{addressHash} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create, update: if isOwner(userId) && 
+                    request.resource.data.keys().hasAll(['address', 'lat', 'lng', 'uid']) &&
+                    request.resource.data.uid == userId;
+      allow delete: if isOwner(userId) || isAdmin();
+    }
+
     match /users/{userId} {
       allow read: if isOwner(userId) || isAdmin();
       allow write: if isAdmin();

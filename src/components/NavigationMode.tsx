@@ -1,9 +1,9 @@
 import React, { useState, useRef } from 'react';
 import { Parcel, UserProfile } from '../types';
 import { MapContainer, TileLayer, Marker, useMap } from 'react-leaflet';
-import { X, Map as MapIcon, Navigation, CheckCircle, Package, Banknote, MessageSquare, Phone, Camera, Loader2 } from 'lucide-react';
+import { X, Map as MapIcon, Navigation, CheckCircle, Package, Banknote, MessageSquare, Phone, Camera, Loader2, MapPin, Edit2, Save, Check, AlertCircle } from 'lucide-react';
 import L from 'leaflet';
-import { getGoogleMapsLetter } from '../lib/utils';
+import { cn, getGoogleMapsLetter } from '../lib/utils';
 
 // Fix Leaflet's default icon path issues in React
 delete (L.Icon.Default.prototype as any)._getIconUrl;
@@ -34,20 +34,34 @@ interface NavigationModeProps {
   parcels: Parcel[];
   profile?: UserProfile | null;
   onMarkDelivered: (id: string, podPhotoUrl?: string) => void;
+  onUpdateParcel: (id: string, data: Partial<Parcel>) => Promise<void>;
   onClose: () => void;
 }
 
-export function NavigationMode({ parcels, profile, onMarkDelivered, onClose }: NavigationModeProps) {
+export function NavigationMode({ parcels, profile, onMarkDelivered, onUpdateParcel, onClose }: NavigationModeProps) {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isCapturingPOD, setIsCapturingPOD] = useState(false);
   const [isUploadingPOD, setIsUploadingPOD] = useState(false);
   const [podPhoto, setPodPhoto] = useState<string | null>(null);
+  const [isUpdatingPin, setIsUpdatingPin] = useState(false);
+  const [isEditingNote, setIsEditingNote] = useState(false);
+  const [noteValue, setNoteValue] = useState('');
   const podInputRef = useRef<HTMLInputElement>(null);
   
   // Only navigate through parcels that were pending when we started
   const [route] = useState(() => 
     parcels.filter(p => p.status === 'pending').sort((a, b) => a.sequenceNumber - b.sequenceNumber)
   );
+
+  const currentParcel = route[currentIndex];
+
+  // Initialize note value when parcel changes
+  React.useEffect(() => {
+    if (currentParcel) {
+      setNoteValue(currentParcel.addressNotes || '');
+      setIsEditingNote(false);
+    }
+  }, [currentParcel]);
 
   if (route.length === 0 || currentIndex >= route.length) {
     return (
@@ -67,7 +81,49 @@ export function NavigationMode({ parcels, profile, onMarkDelivered, onClose }: N
     );
   }
 
-  const currentParcel = route[currentIndex];
+  const handleUpdatePin = () => {
+    if (!navigator.geolocation) {
+      alert("Geolocation tidak disokong oleh browser anda.");
+      return;
+    }
+
+    setIsUpdatingPin(true);
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        try {
+          await onUpdateParcel(currentParcel.id, {
+            lat: position.coords.latitude,
+            lng: position.coords.longitude,
+            isLocationVerified: true
+          });
+          // Update local route data to reflect new pin immediately
+          currentParcel.lat = position.coords.latitude;
+          currentParcel.lng = position.coords.longitude;
+          currentParcel.isLocationVerified = true;
+        } catch (err) {
+          console.error("Failed to update pin:", err);
+        } finally {
+          setIsUpdatingPin(false);
+        }
+      },
+      (err) => {
+        console.error("Geolocation error:", err);
+        setIsUpdatingPin(false);
+        alert("Gagal mendapatkan lokasi semasa. Sila pastikan GPS anda aktif.");
+      },
+      { enableHighAccuracy: true }
+    );
+  };
+
+  const handleSaveNote = async () => {
+    try {
+      await onUpdateParcel(currentParcel.id, { addressNotes: noteValue });
+      currentParcel.addressNotes = noteValue;
+      setIsEditingNote(false);
+    } catch (err) {
+      console.error("Failed to save note:", err);
+    }
+  };
 
   const handleDelivered = () => {
     onMarkDelivered(currentParcel.id, podPhoto || undefined);
@@ -75,18 +131,52 @@ export function NavigationMode({ parcels, profile, onMarkDelivered, onClose }: N
     setCurrentIndex(prev => prev + 1);
   };
 
-  const handlePODCapture = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const compressImage = (base64: string): Promise<string> => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let width = img.width;
+        let height = img.height;
+        const MAX_SIZE = 800; // Slightly smaller for POD to be safe
+        if (width > height) {
+          if (width > MAX_SIZE) {
+            height *= MAX_SIZE / width;
+            width = MAX_SIZE;
+          }
+        } else {
+          if (height > MAX_SIZE) {
+            width *= MAX_SIZE / height;
+            height = MAX_SIZE;
+          }
+        }
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx?.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', 0.5)); // 0.5 quality for POD
+      };
+      img.src = base64;
+    });
+  };
+
+  const handlePODCapture = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     setIsUploadingPOD(true);
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       const base64 = event.target?.result as string;
-      // In a real app, we would upload to Firebase Storage
-      // For now, we'll just store the base64 string (not ideal for large images but works for demo)
-      setPodPhoto(base64);
-      setIsUploadingPOD(false);
+      try {
+        const compressed = await compressImage(base64);
+        setPodPhoto(compressed);
+      } catch (err) {
+        console.error("Compression failed:", err);
+        setPodPhoto(base64); // Fallback
+      } finally {
+        setIsUploadingPOD(false);
+      }
     };
     reader.readAsDataURL(file);
   };
@@ -193,8 +283,68 @@ export function NavigationMode({ parcels, profile, onMarkDelivered, onClose }: N
                   <p className="font-black text-gray-900 text-base mb-0.5">{currentParcel.recipientName}</p>
                 )}
                 <p className="font-medium text-gray-600 text-sm leading-relaxed">{currentParcel.address}</p>
+                
+                {currentParcel.isLocationVerified && (
+                  <div className="mt-1 flex items-center gap-1 text-[10px] font-black text-blue-600 uppercase tracking-widest">
+                    <Check size={12} /> Pin Disahkan
+                  </div>
+                )}
+
+                {currentParcel.addressNotes && !isEditingNote && (
+                  <div className="mt-2 bg-yellow-50 border border-yellow-100 p-2 rounded-lg text-xs font-bold text-yellow-800 flex items-start gap-2">
+                    <Edit2 size={12} className="mt-0.5 flex-shrink-0" />
+                    <span>Nota: {currentParcel.addressNotes}</span>
+                  </div>
+                )}
               </div>
             </div>
+
+            {isEditingNote ? (
+              <div className="mt-3 flex gap-2 animate-in fade-in slide-in-from-top-1">
+                <input 
+                  autoFocus
+                  type="text"
+                  value={noteValue}
+                  onChange={(e) => setNoteValue(e.target.value)}
+                  placeholder="Cth: Pagar hijau, depan kedai..."
+                  className="flex-1 bg-white border-2 border-orange-100 rounded-xl px-3 py-2 text-sm font-bold outline-none focus:border-orange-500"
+                />
+                <button 
+                  onClick={handleSaveNote}
+                  className="bg-orange-500 text-white p-2 rounded-xl shadow-lg active:scale-90 transition-all"
+                >
+                  <Save size={20} />
+                </button>
+                <button 
+                  onClick={() => setIsEditingNote(false)}
+                  className="bg-gray-200 text-gray-600 p-2 rounded-xl active:scale-90 transition-all"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+            ) : (
+              <div className="mt-3 flex gap-2">
+                <button 
+                  onClick={handleUpdatePin}
+                  disabled={isUpdatingPin}
+                  className={cn(
+                    "flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-xl text-[10px] font-black uppercase transition-all active:scale-95",
+                    currentParcel.isLocationVerified 
+                      ? "bg-blue-50 text-blue-600 border border-blue-100" 
+                      : "bg-orange-500 text-white shadow-lg shadow-orange-200"
+                  )}
+                >
+                  {isUpdatingPin ? <Loader2 size={14} className="animate-spin" /> : <MapPin size={14} />}
+                  {currentParcel.isLocationVerified ? "Pin Sudah Disahkan" : "Pin Lokasi Sebenar"}
+                </button>
+                <button 
+                  onClick={() => setIsEditingNote(true)}
+                  className="flex items-center justify-center gap-2 py-2 px-4 bg-gray-100 text-gray-600 rounded-xl text-[10px] font-black uppercase active:scale-95 transition-all"
+                >
+                  <Edit2 size={14} /> Nota Rumah
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>

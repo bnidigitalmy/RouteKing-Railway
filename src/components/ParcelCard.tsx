@@ -1,5 +1,5 @@
 import React, { memo } from 'react';
-import { MapPin, Navigation, CheckCircle2, Circle, ExternalLink, Banknote, User as UserIcon, Folder, MoreVertical, Phone, MessageSquare, Copy, Image as ImageIcon, X } from 'lucide-react';
+import { MapPin, Navigation, CheckCircle2, Circle, ExternalLink, Banknote, User as UserIcon, Folder, MoreVertical, Phone, MessageSquare, Copy, Image as ImageIcon, X, Edit2 } from 'lucide-react';
 import { Parcel, UserProfile } from '../types';
 import { cn, getGoogleMapsLetter } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
@@ -131,6 +131,19 @@ export const ParcelCard = memo(function ParcelCard({ parcel, profile, onStatusCh
           <h4 className="font-bold text-gray-600 text-sm mt-1 line-clamp-2 leading-tight">
             {parcel.address}
           </h4>
+
+          {parcel.isLocationVerified && (
+            <div className="mt-1 flex items-center gap-1 text-[10px] font-black text-blue-600 uppercase tracking-widest">
+              <CheckCircle2 size={10} /> Pin Disahkan
+            </div>
+          )}
+
+          {parcel.addressNotes && (
+            <div className="mt-2 bg-yellow-50 border border-yellow-100 p-2 rounded-lg text-[11px] font-bold text-yellow-800 flex items-start gap-2">
+              <Edit2 size={12} className="mt-0.5 flex-shrink-0" />
+              <span className="line-clamp-2">{parcel.addressNotes}</span>
+            </div>
+          )}
 
           <div className="flex flex-wrap gap-2 mt-2">
             {parcel.isCOD && (

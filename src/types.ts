@@ -15,6 +15,8 @@ export interface Parcel {
   codAmount?: number;
   groupTag?: string;
   folder?: string;
+  addressNotes?: string;
+  isLocationVerified?: boolean;
   uid: string; // Firebase User ID
 }
 

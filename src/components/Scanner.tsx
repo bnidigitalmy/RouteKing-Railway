@@ -36,6 +36,38 @@ const playBeep = () => {
   }
 };
 
+const playErrorSound = () => {
+  try {
+    if (!audioCtx) {
+      audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    }
+    
+    if (audioCtx.state === 'suspended') {
+      audioCtx.resume();
+    }
+
+    // Play two low beeps for error
+    [0, 0.15].forEach((delay) => {
+      const oscillator = audioCtx!.createOscillator();
+      const gainNode = audioCtx!.createGain();
+
+      oscillator.connect(gainNode);
+      gainNode.connect(audioCtx!.destination);
+
+      oscillator.type = 'square'; // Sharper sound for error
+      oscillator.frequency.setValueAtTime(220, audioCtx!.currentTime + delay); // A3 note (low)
+      gainNode.gain.setValueAtTime(0, audioCtx!.currentTime + delay);
+      gainNode.gain.linearRampToValueAtTime(0.15, audioCtx!.currentTime + delay + 0.01);
+      gainNode.gain.linearRampToValueAtTime(0, audioCtx!.currentTime + delay + 0.12);
+
+      oscillator.start(audioCtx!.currentTime + delay);
+      oscillator.stop(audioCtx!.currentTime + delay + 0.12);
+    });
+  } catch (e) {
+    console.warn("Audio context error:", e);
+  }
+};
+
 interface ScannerProps {
   onScan?: (data: { recipientName?: string; recipientPhone?: string; address: string; trackingNumber: string; isCOD: boolean; codAmount?: number; groupTag?: string }) => Promise<void> | void;
   onMarkScan?: (trackingNumber: string) => Parcel | undefined;
@@ -233,6 +265,7 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan', quota }: S
               }, 800);
             }
           } catch (err: any) {
+            playErrorSound(); // Play error sound on duplicate or other save errors
             setError(err?.message || "Gagal simpan parcel.");
             setIsSaving(false);
           }
@@ -255,6 +288,7 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan', quota }: S
         }
       }
     } catch (err: any) {
+      playErrorSound(); // Play error sound on extraction or duplicate error
       const errMsg = err?.message || "Gagal membaca label.";
       setError(`${errMsg} Pastikan gambar label terang dan jelas.`);
       console.error("Scanner Error:", err);
@@ -286,10 +320,12 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan', quota }: S
 
   const handleSubmit = async () => {
     if (!editAddress || !editTracking) {
+      playErrorSound();
       setError("Sila isi alamat dan nombor tracking.");
       return;
     }
     if (isCOD && (!codAmount || isNaN(parseFloat(codAmount)))) {
+      playErrorSound();
       setError("Sila masukkan jumlah COD yang sah.");
       return;
     }
@@ -310,6 +346,7 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan', quota }: S
         });
       }
     } catch (err: any) {
+      playErrorSound();
       setError(err?.message || "Gagal simpan parcel.");
     } finally {
       setIsSaving(false);
