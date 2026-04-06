@@ -41,3 +41,15 @@ export interface OptimizationResult {
   optimizedParcels: Parcel[];
   totalDistance: number;
 }
+
+export interface Discount {
+  id: string;
+  code: string;
+  type: 'percentage' | 'fixed';
+  value: number;
+  expiryDate?: number;
+  usageLimit?: number;
+  usageCount: number;
+  isActive: boolean;
+  createdAt: number;
+}

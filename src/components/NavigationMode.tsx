@@ -204,14 +204,18 @@ export function NavigationMode({ parcels, profile, onMarkDelivered, onUpdateParc
       phone = '60' + phone;
     }
 
-    const riderInfo = profile?.riderName ? `${profile.riderName} (${profile.courierCompany || 'SPX'})` : 'rider Shopee Express (SPX)';
+    const courierName = profile?.courierCompany || 'SPX Express';
+    const tracking = currentParcel.trackingNumber;
     
-    let codText = '';
+    let messageText = `Hai! Saya rider ${courierName}. Parcel anda [${tracking}] akan sampai dalam 10-15 minit! 📦\n\n`;
+    
     if (currentParcel.isCOD && currentParcel.codAmount) {
-      codText = ` Sila sediakan wang tunai RM${currentParcel.codAmount.toFixed(2)} untuk bayaran COD ya.`;
+      messageText += `Ini adalah parcel COD (RM${currentParcel.codAmount.toFixed(2)}). Boleh bayar guna Cash atau QR DuitNow ya. 💵\n\n`;
     }
-
-    const message = encodeURIComponent(`Hai, saya ${riderInfo}. Parcel anda (${currentParcel.trackingNumber}) akan sampai dalam 10 minit!${codText} Sila sedia ya. Terima kasih.`);
+    
+    messageText += `Sila sedia ya. Terima kasih! 🙏`;
+    
+    const message = encodeURIComponent(messageText);
     const url = `https://wa.me/${phone}?text=${message}`;
     window.open(url, '_blank');
   };

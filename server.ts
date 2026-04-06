@@ -50,15 +50,49 @@ async function startServer() {
 
   // 1. Create Bill
   app.post("/api/payment/create", async (req, res) => {
-    const { uid, email, name, phone, type } = req.body;
+    const { uid, email, name, phone, type, discountCode } = req.body;
     
     if (!uid || !email || !type) {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
-    const amount = type === 'monthly' ? 990 : 8900; // in cents
+    let amount = type === 'monthly' ? 1490 : 11900; // in cents
+    let appliedDiscountId = "";
+
+    // Apply Discount if provided
+    if (discountCode) {
+      try {
+        const discountSnapshot = await db.collection('discounts')
+          .where('code', '==', discountCode.toUpperCase().trim())
+          .where('isActive', '==', true)
+          .limit(1)
+          .get();
+
+        if (!discountSnapshot.empty) {
+          const discountDoc = discountSnapshot.docs[0];
+          const discountData = discountDoc.data();
+          
+          // Check expiry
+          const now = Date.now();
+          if (!discountData.expiryDate || discountData.expiryDate > now) {
+            // Check usage limit
+            if (!discountData.usageLimit || (discountData.usageCount || 0) < discountData.usageLimit) {
+              appliedDiscountId = discountDoc.id;
+              if (discountData.type === 'percentage') {
+                amount = Math.round(amount * (1 - discountData.value / 100));
+              } else if (discountData.type === 'fixed') {
+                amount = Math.max(0, amount - (discountData.value * 100));
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Discount processing error:", err);
+      }
+    }
+
     const billName = `RouteKing ${type === 'monthly' ? 'Monthly' : 'Yearly'} Subscription`;
-    const billDescription = `Subscription for user ${uid}`;
+    const billDescription = `Subscription for user ${uid}${discountCode ? ` (Discount: ${discountCode})` : ''}`;
 
     try {
       const formData = new URLSearchParams();
@@ -71,7 +105,7 @@ async function startServer() {
       formData.append('billAmount', amount.toString());
       formData.append('billReturnUrl', `${APP_URL}/api/payment/return`);
       formData.append('billCallbackUrl', `${APP_URL}/api/payment/callback`);
-      formData.append('billExternalReferenceNo', `${uid}_${type}_${Date.now()}`);
+      formData.append('billExternalReferenceNo', `${uid}_${type}_${Date.now()}${appliedDiscountId ? `_${appliedDiscountId}` : ''}`);
       formData.append('billTo', name || 'Rider');
       formData.append('billEmail', email);
       formData.append('billPhone', phone || '0123456789');
@@ -111,6 +145,8 @@ async function startServer() {
       const parts = refno.split('_');
       const uid = parts[0];
       const type = parts[1]; // 'monthly' or 'yearly'
+      const timestamp = parts[2];
+      const discountId = parts[3]; // Optional
       
       const now = Date.now();
       let expiryDate = now;
@@ -124,7 +160,7 @@ async function startServer() {
       }
 
       try {
-        // Update Firestore
+        // Update Firestore Profile
         await db.collection('profiles').doc(uid).set({
           isPro: true,
           expiryDate: expiryDate,
@@ -133,6 +169,13 @@ async function startServer() {
           subscriptionType: type,
           updatedAt: now
         }, { merge: true });
+
+        // Update Discount Usage if applicable
+        if (discountId) {
+          await db.collection('discounts').doc(discountId).update({
+            usageCount: admin.firestore.FieldValue.increment(1)
+          });
+        }
         
         console.log(`Successfully updated subscription for user ${uid} (${type})`);
       } catch (error) {

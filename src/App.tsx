@@ -3,7 +3,7 @@ import axios from 'axios';
 import { LandingPage } from './components/LandingPage';
 import { AdminDashboard } from './components/AdminDashboard';
 import { Plus, MapPin, Navigation, Trash2, RefreshCw, Package, ArrowRight, Camera, Search, LayoutGrid, List, Map, Filter, Folder, MoreVertical, LogOut, LogIn, AlertCircle, X, Edit2, User as UserIcon, CheckCircle2, Copy, Share2, ChevronDown, ChevronRight, ShieldCheck, Truck, Settings, Banknote, HelpCircle } from 'lucide-react';
-import { Parcel, UserProfile } from './types';
+import { Parcel, UserProfile, Discount } from './types';
 import { Scanner } from './components/Scanner';
 import { LegalModal } from './components/LegalModal';
 import { ParcelCard } from './components/ParcelCard';
@@ -86,6 +86,10 @@ export default function App() {
     type: 'privacy'
   });
   const [isSubscriptionModalOpen, setIsSubscriptionModalOpen] = useState(false);
+  const [discountCode, setDiscountCode] = useState('');
+  const [appliedDiscount, setAppliedDiscount] = useState<Discount | null>(null);
+  const [isValidatingDiscount, setIsValidatingDiscount] = useState(false);
+  const [discountError, setDiscountError] = useState<string | null>(null);
   const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [isSavingEdit, setIsSavingEdit] = useState(false);
@@ -607,6 +611,50 @@ export default function App() {
     }
   };
 
+  const validateDiscountCode = async () => {
+    if (!discountCode.trim()) return;
+    setIsValidatingDiscount(true);
+    setDiscountError(null);
+    try {
+      const q = query(
+        collection(db, 'discounts'), 
+        where('code', '==', discountCode.toUpperCase().trim()),
+        where('isActive', '==', true)
+      );
+      const snapshot = await getDocs(q);
+      
+      if (snapshot.empty) {
+        setDiscountError("Kod diskaun tidak sah");
+        setAppliedDiscount(null);
+        return;
+      }
+
+      const data = { id: snapshot.docs[0].id, ...snapshot.docs[0].data() } as Discount;
+      
+      // Check expiry
+      if (data.expiryDate && data.expiryDate < Date.now()) {
+        setDiscountError("Kod diskaun telah tamat tempoh");
+        setAppliedDiscount(null);
+        return;
+      }
+
+      // Check usage limit
+      if (data.usageLimit && data.usageCount >= data.usageLimit) {
+        setDiscountError("Kod diskaun telah mencapai had penggunaan");
+        setAppliedDiscount(null);
+        return;
+      }
+
+      setAppliedDiscount(data);
+      setDiscountError(null);
+    } catch (err) {
+      console.error("Discount validation error:", err);
+      setDiscountError("Ralat mengesahkan kod");
+    } finally {
+      setIsValidatingDiscount(false);
+    }
+  };
+
   const handleRealPayment = async (type: 'monthly' | 'yearly') => {
     if (!user) return;
     setIsSavingProfile(true);
@@ -617,7 +665,8 @@ export default function App() {
         uid: user.uid,
         email: user.email,
         name: riderName || user.displayName,
-        type: type
+        type: type,
+        discountCode: appliedDiscount?.code
       });
       
       if (response.data.paymentUrl) {
@@ -1904,54 +1953,113 @@ export default function App() {
                       </button>
                     </div>
                   ) : (
-                    <div className="space-y-3 pt-4">
-                      <button 
-                        disabled={isSavingProfile}
-                        className={cn(
-                          "w-full p-6 bg-blue-50 rounded-3xl border-2 border-blue-100 text-left relative overflow-hidden group hover:border-blue-300 transition-all disabled:opacity-50",
-                          isSavingProfile && "cursor-not-allowed"
-                        )} 
-                        onClick={() => handleRealPayment('monthly')}
-                      >
-                        <div className="flex justify-between items-center mb-1">
-                          <span className="font-black text-blue-900">Bulanan</span>
-                          <span className="bg-blue-600 text-white text-[10px] font-bold px-2 py-1 rounded-full">POPULAR</span>
+                    <div className="space-y-4 pt-4">
+                      <div className="flex flex-col gap-2">
+                        <div className="flex gap-2">
+                          <input 
+                            type="text"
+                            placeholder="Kod Diskaun"
+                            className="flex-1 bg-gray-50 border-2 border-gray-100 rounded-xl py-3 px-4 text-sm font-bold uppercase outline-none focus:border-blue-500 transition-all"
+                            value={discountCode}
+                            onChange={(e) => setDiscountCode(e.target.value)}
+                            disabled={isValidatingDiscount || !!appliedDiscount}
+                          />
+                          {appliedDiscount ? (
+                            <button 
+                              onClick={() => {
+                                setAppliedDiscount(null);
+                                setDiscountCode('');
+                              }}
+                              className="px-4 bg-red-50 text-red-600 rounded-xl font-bold text-xs uppercase"
+                            >
+                              Batal
+                            </button>
+                          ) : (
+                            <button 
+                              onClick={validateDiscountCode}
+                              disabled={isValidatingDiscount || !discountCode.trim()}
+                              className="px-6 bg-gray-900 text-white rounded-xl font-black text-xs uppercase tracking-widest disabled:opacity-50"
+                            >
+                              {isValidatingDiscount ? <RefreshCw size={14} className="animate-spin" /> : 'Guna'}
+                            </button>
+                          )}
                         </div>
-                        <div className="flex items-baseline gap-1">
-                          <span className="text-2xl font-black text-blue-600">RM9.90</span>
-                          <span className="text-xs text-blue-400 font-bold">/ bulan</span>
-                        </div>
-                        <p className="text-[10px] text-blue-400 mt-2 font-bold uppercase tracking-widest">Akses Penuh • Tanpa Had</p>
-                        {isSavingProfile && (
-                          <div className="absolute inset-0 bg-blue-50/50 flex items-center justify-center">
-                            <RefreshCw className="animate-spin text-blue-600" size={24} />
-                          </div>
+                        {discountError && <p className="text-[10px] text-red-500 font-bold px-1">{discountError}</p>}
+                        {appliedDiscount && (
+                          <p className="text-[10px] text-green-600 font-bold px-1 flex items-center gap-1">
+                            <CheckCircle2 size={10} />
+                            Kod Berjaya: {appliedDiscount.type === 'percentage' ? `${appliedDiscount.value}%` : `RM${appliedDiscount.value}`} OFF
+                          </p>
                         )}
-                      </button>
+                      </div>
 
-                      <button 
-                        disabled={isSavingProfile}
-                        className={cn(
-                          "w-full p-6 bg-gray-50 rounded-3xl border-2 border-gray-100 text-left relative overflow-hidden group hover:border-blue-200 transition-all disabled:opacity-50",
-                          isSavingProfile && "cursor-not-allowed"
-                        )} 
-                        onClick={() => handleRealPayment('yearly')}
-                      >
-                        <div className="flex justify-between items-center mb-1">
-                          <span className="font-black text-gray-900">Tahunan</span>
-                          <span className="bg-green-500 text-white text-[10px] font-bold px-2 py-1 rounded-full">JIMAT RM30</span>
-                        </div>
-                        <div className="flex items-baseline gap-1">
-                          <span className="text-2xl font-black text-gray-800">RM89.00</span>
-                          <span className="text-xs text-gray-400 font-bold">/ tahun</span>
-                        </div>
-                        <p className="text-[10px] text-gray-400 mt-2 font-bold uppercase tracking-widest">Akses Penuh • 12 Bulan</p>
-                        {isSavingProfile && (
-                          <div className="absolute inset-0 bg-gray-50/50 flex items-center justify-center">
-                            <RefreshCw className="animate-spin text-gray-600" size={24} />
+                      <div className="space-y-3">
+                        <button 
+                          disabled={isSavingProfile}
+                          className={cn(
+                            "w-full p-6 bg-blue-50 rounded-3xl border-2 border-blue-100 text-left relative overflow-hidden group hover:border-blue-300 transition-all disabled:opacity-50",
+                            isSavingProfile && "cursor-not-allowed"
+                          )} 
+                          onClick={() => handleRealPayment('monthly')}
+                        >
+                          <div className="flex justify-between items-center mb-1">
+                            <span className="font-black text-blue-900">Bulanan</span>
+                            <span className="bg-blue-600 text-white text-[10px] font-bold px-2 py-1 rounded-full">POPULAR</span>
                           </div>
-                        )}
-                      </button>
+                          <div className="flex items-baseline gap-1">
+                            <span className="text-2xl font-black text-blue-600">
+                              RM{appliedDiscount ? (
+                                appliedDiscount.type === 'percentage' 
+                                  ? (14.90 * (1 - appliedDiscount.value / 100)).toFixed(2)
+                                  : Math.max(0, 14.90 - appliedDiscount.value).toFixed(2)
+                              ) : '14.90'}
+                            </span>
+                            <span className="text-xs text-blue-400 font-bold">/ bulan</span>
+                          </div>
+                          {appliedDiscount && (
+                            <p className="text-[10px] text-blue-400 line-through font-bold">RM14.90</p>
+                          )}
+                          <p className="text-[10px] text-blue-400 mt-2 font-bold uppercase tracking-widest">Akses Penuh • Tanpa Had</p>
+                          {isSavingProfile && (
+                            <div className="absolute inset-0 bg-blue-50/50 flex items-center justify-center">
+                              <RefreshCw className="animate-spin text-blue-600" size={24} />
+                            </div>
+                          )}
+                        </button>
+
+                        <button 
+                          disabled={isSavingProfile}
+                          className={cn(
+                            "w-full p-6 bg-gray-50 rounded-3xl border-2 border-gray-100 text-left relative overflow-hidden group hover:border-blue-200 transition-all disabled:opacity-50",
+                            isSavingProfile && "cursor-not-allowed"
+                          )} 
+                          onClick={() => handleRealPayment('yearly')}
+                        >
+                          <div className="flex justify-between items-center mb-1">
+                            <span className="font-black text-gray-900">Tahunan</span>
+                            <span className="bg-green-500 text-white text-[10px] font-bold px-2 py-1 rounded-full">JIMAT RM60</span>
+                          </div>
+                          <div className="flex items-baseline gap-1">
+                            <span className="text-2xl font-black text-gray-800">
+                              RM{appliedDiscount ? (
+                                appliedDiscount.type === 'percentage' 
+                                  ? (119.00 * (1 - appliedDiscount.value / 100)).toFixed(2)
+                                  : Math.max(0, 119.00 - appliedDiscount.value).toFixed(2)
+                              ) : '119.00'}
+                            </span>
+                            <span className="text-xs text-gray-400 font-bold">/ tahun</span>
+                          </div>
+                          {appliedDiscount && (
+                            <p className="text-[10px] text-gray-400 line-through font-bold">RM119.00</p>
+                          )}
+                          <p className="text-[10px] text-gray-400 mt-2 font-bold uppercase tracking-widest">Akses Penuh • 12 Bulan</p>
+                          {isSavingProfile && (
+                            <div className="absolute inset-0 bg-gray-50/50 flex items-center justify-center">
+                              <RefreshCw className="animate-spin text-gray-600" size={24} />
+                            </div>
+                          )}
+                        </button>
+                      </div>
                     </div>
                   )}
 

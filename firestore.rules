@@ -42,6 +42,17 @@
 //   - lng: number (required)
 //   - lastUpdated: number (required)
 //
+// Collection: discounts
+// Fields:
+//   - code: string (required, uppercase)
+//   - type: string (required, ['percentage', 'fixed'])
+//   - value: number (required)
+//   - isActive: boolean (required)
+//   - usageLimit: number (optional)
+//   - usageCount: number (required)
+//   - expiryDate: number (optional)
+//   - createdAt: number (required)
+//
 // ===============================================================
 
 rules_version = '2';
@@ -142,6 +153,11 @@ service cloud.firestore {
 
     match /users/{userId} {
       allow read: if isOwner(userId) || isAdmin();
+      allow write: if isAdmin();
+    }
+
+    match /discounts/{discountId} {
+      allow read: if isAuthenticated();
       allow write: if isAdmin();
     }
   }

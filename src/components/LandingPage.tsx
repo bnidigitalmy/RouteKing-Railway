@@ -21,7 +21,8 @@ import {
   Smile,
   Coins,
   Home,
-  Coffee
+  Coffee,
+  Camera
 } from 'lucide-react';
 
 interface LandingPageProps {
@@ -382,34 +383,34 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart, isLoggingIn }
           <div className="grid md:grid-cols-3 gap-8">
             {[
               {
+                icon: <Camera className="text-blue-500" />,
+                title: "Scanner AI Laju",
+                desc: "Scan label terus dapat Nama, No. Tel, Alamat & Tracking. Tak payah taip manual lagi, jimat masa gila!"
+              },
+              {
                 icon: <Zap className="text-yellow-500" />,
-                title: "Optimasi Pantas",
-                desc: "Susun 50+ alamat dalam masa kurang 5 saat. Tak perlu pening kepala fikir jalan mana dulu."
+                title: "Optimasi Laluan",
+                desc: "Susun 50+ alamat dalam masa kurang 5 saat. Sistem susun ikut jalan paling dekat & jimat minyak."
               },
               {
-                icon: <TrendingUp className="text-green-500" />,
-                title: "Jimat Minyak & Masa",
-                desc: "Laluan yang lebih pendek bermaksud kurang penggunaan minyak dan anda boleh balik awal."
+                icon: <ShieldCheck className="text-green-500" />,
+                title: "Pin & Nota Disahkan",
+                desc: "Sahkan pin lokasi tepat depan pintu & tambah nota visual (cth: Pagar Merah). Tak sesat lagi!"
               },
               {
-                icon: <Smartphone className="text-blue-500" />,
-                title: "Mesra Mobile",
-                desc: "Guna terus dari phone. Interface yang besar dan senang tekan walaupun tengah pakai glove."
+                icon: <TrendingUp className="text-purple-500" />,
+                title: "Smart Memory",
+                desc: "App 'ingat' alamat yang dah pernah hantar. Pin & nota akan keluar automatik untuk hantaran akan datang."
               },
               {
-                icon: <ShieldCheck className="text-purple-500" />,
-                title: "Data Selamat",
-                desc: "Semua rekod parcel dan pelanggan anda disimpan selamat dalam cloud. Boleh akses bila-bila masa."
+                icon: <Smartphone className="text-orange-500" />,
+                title: "WhatsApp Friendly",
+                desc: "Hantar mesej auto yang mesra. Siap ada info COD (Cash/QR) supaya customer sedia duit awal."
               },
               {
                 icon: <Clock className="text-red-500" />,
-                title: "Rekod Automatik",
-                desc: "Simpan sejarah penghantaran anda. Senang nak semak balik kalau ada customer tanya."
-              },
-              {
-                icon: <Package className="text-orange-500" />,
-                title: "Sokongan Semua Kurier",
-                desc: "Sesuai untuk semua syarikat kurier di Malaysia. J&T, Poslaju, Shopee Xpress, dan lain-lain."
+                title: "POD & COD Tracker",
+                desc: "Ambil gambar bukti hantaran (POD) & pantau jumlah kutipan COD harian anda secara automatik."
               }
             ].map((feature, idx) => (
               <motion.div 
@@ -443,10 +444,11 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart, isLoggingIn }
                 <div className="space-y-4">
                   {[
                     "Akses Penuh Semua Ciri",
-                    "Tiada Had Alamat",
+                    "Scanner AI & Optimasi Laluan",
+                    "Smart Memory & Pin Disahkan",
+                    "WhatsApp Auto-Template",
                     "Simpan Sejarah Tanpa Had",
-                    "Sokongan Pelanggan VIP",
-                    "Update Ciri Baru Percuma"
+                    "Sokongan Pelanggan VIP"
                   ].map((item, i) => (
                     <div key={i} className="flex items-center gap-3 text-gray-300">
                       <CheckCircle2 className="text-blue-400" size={20} />
@@ -458,13 +460,16 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart, isLoggingIn }
 
               <div className="bg-white rounded-[2.5rem] p-8 lg:p-12 shadow-2xl">
                 <div className="inline-block px-4 py-1 bg-blue-100 text-blue-700 rounded-full text-[10px] font-black uppercase tracking-widest mb-6">
-                  Pakej Paling Popular
+                  Pakej Promo (100 Rider Pertama)
                 </div>
-                <div className="flex items-baseline gap-2 mb-8">
-                  <span className="text-5xl font-black text-gray-900">RM9.90</span>
+                <div className="flex items-baseline gap-2 mb-2">
+                  <span className="text-5xl font-black text-gray-900">RM14.90</span>
                   <span className="text-gray-400 font-bold">/ bulan</span>
                 </div>
-                <p className="text-gray-500 mb-8 font-medium">Hanya 33 sen sehari untuk kerja yang lebih tersusun dan kurang stress.</p>
+                <div className="mb-8">
+                  <span className="text-sm text-gray-400 line-through font-bold">Harga Asal: RM29.90</span>
+                </div>
+                <p className="text-gray-500 mb-8 font-medium">Hanya 50 sen sehari untuk kerja yang lebih tersusun, jimat minyak, dan kurang stress.</p>
                 <button 
                   onClick={onStart}
                   disabled={isLoggingIn}

@@ -44,6 +44,22 @@
         "lastUpdated": { "type": "number" }
       },
       "required": ["address", "lat", "lng"]
+    },
+    "discount": {
+      "title": "Discount",
+      "description": "Discount codes for subscriptions",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string", "description": "The discount code (e.g. RIDER50)" },
+        "type": { "type": "string", "enum": ["percentage", "fixed"], "description": "Type of discount" },
+        "value": { "type": "number", "description": "Value of the discount (e.g. 10 for 10% or RM10)" },
+        "expiryDate": { "type": "number", "description": "Timestamp when the code expires" },
+        "usageLimit": { "type": "number", "description": "Maximum number of times the code can be used" },
+        "usageCount": { "type": "number", "description": "Current usage count" },
+        "isActive": { "type": "boolean", "description": "Whether the code is active" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["code", "type", "value", "isActive"]
     }
   },
   "firestore": {
@@ -62,6 +78,10 @@
     "/users/{userId}/verified_addresses/{addressHash}": {
       "schema": "geocache",
       "description": "User-specific verified addresses with notes"
+    },
+    "/discounts/{discountId}": {
+      "schema": "discount",
+      "description": "Subscription discount codes"
     }
   }
 }

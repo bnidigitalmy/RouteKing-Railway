@@ -39,8 +39,18 @@ export const ParcelCard = memo(function ParcelCard({ parcel, profile, onStatusCh
       phone = '60' + phone;
     }
 
-    const riderInfo = profile?.riderName ? `${profile.riderName} (${profile.courierCompany || 'SPX'})` : 'rider Shopee Express (SPX)';
-    const message = encodeURIComponent(`Hai, saya ${riderInfo}. Parcel anda (${parcel.trackingNumber}) akan sampai dalam 10 minit! Sila sedia ya. Terima kasih.`);
+    const courierName = profile?.courierCompany || 'SPX Express';
+    const tracking = parcel.trackingNumber;
+    
+    let messageText = `Hai! Saya rider ${courierName}. Parcel anda [${tracking}] akan sampai dalam 10-15 minit! 📦\n\n`;
+    
+    if (parcel.isCOD && parcel.codAmount) {
+      messageText += `Ini adalah parcel COD (RM${parcel.codAmount.toFixed(2)}). Boleh bayar guna Cash atau QR DuitNow ya. 💵\n\n`;
+    }
+    
+    messageText += `Sila sedia ya. Terima kasih! 🙏`;
+    
+    const message = encodeURIComponent(messageText);
     const url = `https://wa.me/${phone}?text=${message}`;
     window.open(url, '_blank');
   };
