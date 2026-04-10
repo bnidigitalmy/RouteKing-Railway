@@ -37,22 +37,20 @@ export async function extractParcelInfo(base64Image: string) {
   return withRetry(async () => {
     try {
       const response = await ai.models.generateContent({
-        model: "gemini-3.1-flash-lite-preview",
-        contents: [
-          {
-            parts: [
-              {
-                text: "Extract from Malaysian AWB: recipientName, recipientPhone, address, trackingNumber, isCOD (bool), codAmount (number). Return JSON only.",
+        model: "gemini-3-flash-preview",
+        contents: {
+          parts: [
+            {
+              text: "Extract from Malaysian AWB: recipientName, recipientPhone, address, trackingNumber, isCOD (bool), codAmount (number). Return JSON only.",
+            },
+            {
+              inlineData: {
+                data: base64Data,
+                mimeType: mimeType,
               },
-              {
-                inlineData: {
-                  data: base64Data,
-                  mimeType: mimeType,
-                },
-              },
-            ],
-          },
-        ],
+            },
+          ],
+        },
         config: {
           responseMimeType: "application/json",
           responseSchema: {

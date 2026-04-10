@@ -12,7 +12,12 @@ export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 
 // Auth functions
-export const signInWithGoogle = () => signInWithPopup(auth, googleProvider);
+export const signInWithGoogle = async () => {
+  const provider = new GoogleAuthProvider();
+  // Force account selection to help with session issues
+  provider.setCustomParameters({ prompt: 'select_account' });
+  return signInWithPopup(auth, provider);
+};
 export const logout = () => signOut(auth);
 
 // Test connection to Firestore

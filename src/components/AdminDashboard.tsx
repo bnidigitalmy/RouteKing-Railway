@@ -83,6 +83,8 @@ export function AdminDashboard({ onClose }: AdminDashboardProps) {
     const unsubDiscounts = onSnapshot(qDiscounts, (snapshot) => {
       const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Discount));
       setDiscounts(data);
+    }, (err) => {
+      console.error("Admin Error (Discounts):", err);
     });
 
     // Fetch some global stats (limited for performance)
@@ -103,14 +105,22 @@ export function AdminDashboard({ onClose }: AdminDashboardProps) {
     };
   }, []);
 
-  const toggleProStatus = async (profile: UserProfile) => {
+  const toggleProStatus = async (profile: UserProfile, targetPlan: 'standard' | 'ultimate') => {
     setUpdatingUid(profile.uid);
     try {
-      const newIsPro = !profile.isPro;
-      const updateData: any = { isPro: newIsPro };
+      const isCurrentlyThatPlan = profile.subscriptionTier === targetPlan;
       
-      if (newIsPro) {
-        // If giving Pro access, set expiry to 1 year from now
+      const updateData: any = {};
+      
+      if (isCurrentlyThatPlan) {
+        // Remove access
+        updateData.isPro = false;
+        updateData.subscriptionTier = 'free';
+        updateData.expiryDate = null;
+      } else {
+        // Give access
+        updateData.isPro = true;
+        updateData.subscriptionTier = targetPlan;
         updateData.expiryDate = Date.now() + (366 * 24 * 60 * 60 * 1000);
         updateData.subscriptionType = 'yearly';
       }
@@ -328,9 +338,10 @@ export function AdminDashboard({ onClose }: AdminDashboardProps) {
                         <div className="flex flex-col items-end gap-2">
                           <span className={cn(
                             "text-[10px] font-black px-2 py-1 rounded-lg uppercase tracking-widest",
+                            profile.subscriptionTier === 'ultimate' ? "bg-purple-100 text-purple-700" : 
                             profile.isPro ? "bg-yellow-100 text-yellow-700" : "bg-gray-100 text-gray-500"
                           )}>
-                            {profile.isPro ? 'Pro User' : 'Free Trial'}
+                            {profile.subscriptionTier === 'ultimate' ? 'Ultimate' : profile.isPro ? 'Pro User' : 'Free Trial'}
                           </span>
                           <div className="flex flex-col items-end gap-1 text-[10px] font-bold text-gray-400">
                             <div className="flex items-center gap-1">
@@ -362,29 +373,41 @@ export function AdminDashboard({ onClose }: AdminDashboardProps) {
                       </div>
                     </div>
 
-                    <div className="pt-2">
+                    <div className="grid grid-cols-2 gap-2 pt-2 border-t border-gray-50">
                       <button 
-                        onClick={() => toggleProStatus(profile)}
+                        onClick={() => toggleProStatus(profile, 'standard')}
                         disabled={updatingUid === profile.uid}
                         className={cn(
-                          "w-full py-3 rounded-xl font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2",
-                          profile.isPro 
+                          "py-3 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2",
+                          profile.isPro && profile.subscriptionTier !== 'ultimate'
                             ? "bg-red-50 text-red-600 hover:bg-red-100" 
                             : "bg-blue-600 text-white hover:bg-blue-700 shadow-lg shadow-blue-100"
                         )}
                       >
                         {updatingUid === profile.uid ? (
-                          <RefreshCw size={14} className="animate-spin" />
-                        ) : profile.isPro ? (
-                          <>
-                            <X size={14} />
-                            Batalkan Akses Pro
-                          </>
+                          <RefreshCw size={12} className="animate-spin" />
+                        ) : profile.isPro && profile.subscriptionTier !== 'ultimate' ? (
+                          'Batal Pro'
                         ) : (
-                          <>
-                            <Crown size={14} />
-                            Berikan Akses Pro
-                          </>
+                          'Set Pro'
+                        )}
+                      </button>
+                      <button 
+                        onClick={() => toggleProStatus(profile, 'ultimate')}
+                        disabled={updatingUid === profile.uid}
+                        className={cn(
+                          "py-3 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2",
+                          profile.subscriptionTier === 'ultimate'
+                            ? "bg-red-50 text-red-600 hover:bg-red-100" 
+                            : "bg-purple-600 text-white hover:bg-purple-700 shadow-lg shadow-purple-100"
+                        )}
+                      >
+                        {updatingUid === profile.uid ? (
+                          <RefreshCw size={12} className="animate-spin" />
+                        ) : profile.subscriptionTier === 'ultimate' ? (
+                          'Batal Ult'
+                        ) : (
+                          'Set Ult'
                         )}
                       </button>
                     </div>

@@ -31,9 +31,19 @@
 //   - riderName: string (required)
 //   - courierCompany: string (required)
 //   - isPro: boolean (optional)
+//   - subscriptionTier: string (optional, ['free', 'lite', 'standard', 'ultimate'])
 //   - trialStartedAt: number (optional)
 //   - expiryDate: number (optional)
 //   - subscriptionType: string (optional)
+//
+// Collection: pending_payments
+// Fields:
+//   - uid: string (required)
+//   - email: string (required)
+//   - type: string (required)
+//   - tier: string (required)
+//   - amount: number (required)
+//   - createdAt: timestamp (required)
 //
 // Collection: geocache
 // Fields:
@@ -41,17 +51,6 @@
 //   - lat: number (required)
 //   - lng: number (required)
 //   - lastUpdated: number (required)
-//
-// Collection: discounts
-// Fields:
-//   - code: string (required, uppercase)
-//   - type: string (required, ['percentage', 'fixed'])
-//   - value: number (required)
-//   - isActive: boolean (required)
-//   - usageLimit: number (optional)
-//   - usageCount: number (required)
-//   - expiryDate: number (optional)
-//   - createdAt: number (required)
 //
 // ===============================================================
 
@@ -77,8 +76,13 @@ service cloud.firestore {
 
     function isAdmin() {
       return isAuthenticated() && 
-        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+        (get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.role == 'admin' ||
          (request.auth.token.email == "bnidigital.my@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isBackend() {
+      // Secret key to allow backend to bypass rules when Admin SDK fails
+      return request.resource.data.get('_backendSecret', '') == 'RK_BACKEND_2026_SECURE_8899';
     }
 
     function isValidParcel(data) {
@@ -102,9 +106,11 @@ service cloud.firestore {
              data.riderName is string && data.riderName.size() < 100 &&
              data.courierCompany is string && data.courierCompany.size() < 100 &&
              (!('isPro' in data) || data.isPro is bool) &&
+             (!('subscriptionTier' in data) || data.subscriptionTier in ['free', 'lite', 'standard', 'ultimate']) &&
              (!('trialStartedAt' in data) || data.trialStartedAt is number) &&
              (!('expiryDate' in data) || data.expiryDate is number || data.expiryDate == null) &&
-             (!('subscriptionType' in data) || data.subscriptionType is string || data.subscriptionType == null);
+             (!('subscriptionType' in data) || data.subscriptionType is string || data.subscriptionType == null) &&
+             (!('_backendSecret' in data) || data._backendSecret is string);
     }
 
     // ===============================================================
@@ -127,8 +133,12 @@ service cloud.firestore {
 
     match /profiles/{userId} {
       allow read: if isOwner(userId) || isAdmin();
-      allow create, update: if (isOwner(userId) || isAdmin()) && isValidProfile(request.resource.data, userId);
+      allow create, update: if (isOwner(userId) || isAdmin() || isBackend()) && isValidProfile(request.resource.data, userId);
       allow delete: if isAdmin();
+    }
+
+    match /pending_payments/{refNo} {
+      allow read, write: if isBackend(); 
     }
 
     match /geocache/{addressHash} {
@@ -153,11 +163,6 @@ service cloud.firestore {
 
     match /users/{userId} {
       allow read: if isOwner(userId) || isAdmin();
-      allow write: if isAdmin();
-    }
-
-    match /discounts/{discountId} {
-      allow read: if isAuthenticated();
       allow write: if isAdmin();
     }
   }

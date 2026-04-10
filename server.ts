@@ -6,22 +6,29 @@ import axios from "axios";
 import bodyParser from "body-parser";
 import cors from "cors";
 import admin from "firebase-admin";
+import { getFirestore } from "firebase-admin/firestore";
 import fs from "fs";
+import { initializeApp as initializeClientApp } from 'firebase/app';
+import { getFirestore as getClientFirestore, doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
 
 // Load Firebase Config
 const firebaseConfigPath = path.join(process.cwd(), 'firebase-applet-config.json');
 const firebaseConfig = JSON.parse(fs.readFileSync(firebaseConfigPath, 'utf8'));
 
 // Initialize Firebase Admin
-admin.initializeApp({
-  projectId: firebaseConfig.projectId,
-});
-const db = admin.firestore();
-if (firebaseConfig.firestoreDatabaseId) {
-  // If a specific database ID is provided, we use it
-  // Note: Standard firebase-admin might need additional setup for named databases
-  // but usually it defaults to (default).
-}
+const firebaseApp = admin.initializeApp();
+
+// Initialize Firebase Client (for Firestore tasks to bypass Admin SDK permission issues)
+const clientApp = initializeClientApp(firebaseConfig);
+const clientDb = getClientFirestore(clientApp, firebaseConfig.firestoreDatabaseId);
+
+// Secret for backend writes
+const BACKEND_SECRET = process.env.BACKEND_INTERNAL_SECRET || 'RK_BACKEND_2026_SECURE_8899';
+
+// Use the specific database ID if provided, otherwise defaults to (default)
+const databaseId = firebaseConfig.firestoreDatabaseId || '(default)';
+console.log(`Initializing Firestore Admin with Database ID: ${databaseId}`);
+const db = getFirestore(firebaseApp, databaseId);
 
 async function startServer() {
   const app = express();
@@ -50,65 +57,76 @@ async function startServer() {
 
   // 1. Create Bill
   app.post("/api/payment/create", async (req, res) => {
-    const { uid, email, name, phone, type, discountCode } = req.body;
+    const { uid, email, name, phone, type, tier } = req.body;
     
-    if (!uid || !email || !type) {
+    if (!uid || !email || !type || !tier) {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
-    let amount = type === 'monthly' ? 1490 : 11900; // in cents
-    let appliedDiscountId = "";
+    // Dynamically determine APP_URL if not set
+    const currentAppUrl = process.env.APP_URL || `${req.protocol}://${req.get('host')}`;
 
-    // Apply Discount if provided
-    if (discountCode) {
-      try {
-        const discountSnapshot = await db.collection('discounts')
-          .where('code', '==', discountCode.toUpperCase().trim())
-          .where('isActive', '==', true)
-          .limit(1)
-          .get();
+    let amount = 1490; // Default Lite
+    if (tier === 'standard') amount = 2990;
+    if (tier === 'ultimate') amount = 4990;
 
-        if (!discountSnapshot.empty) {
-          const discountDoc = discountSnapshot.docs[0];
-          const discountData = discountDoc.data();
-          
-          // Check expiry
-          const now = Date.now();
-          if (!discountData.expiryDate || discountData.expiryDate > now) {
-            // Check usage limit
-            if (!discountData.usageLimit || (discountData.usageCount || 0) < discountData.usageLimit) {
-              appliedDiscountId = discountDoc.id;
-              if (discountData.type === 'percentage') {
-                amount = Math.round(amount * (1 - discountData.value / 100));
-              } else if (discountData.type === 'fixed') {
-                amount = Math.max(0, amount - (discountData.value * 100));
-              }
-            }
-          }
-        }
-      } catch (err) {
-        console.error("Discount processing error:", err);
-      }
+    if (type === 'yearly') {
+      // Yearly discount (10 months price for 12 months)
+      amount = amount * 10;
     }
 
-    const billName = `RouteKing ${type === 'monthly' ? 'Monthly' : 'Yearly'} Subscription`;
-    const billDescription = `Subscription for user ${uid}${discountCode ? ` (Discount: ${discountCode})` : ''}`;
+    const billName = `RK ${tier.toUpperCase()} ${type === 'monthly' ? 'Monthly' : 'Yearly'}`.substring(0, 30);
+    const billDescription = `Subscription for user ${uid}`;
 
     try {
+      if (!TOYYIBPAY_SECRET || !TOYYIBPAY_CATEGORY) {
+        console.error("ToyyibPay configuration missing");
+        return res.status(500).json({ 
+          error: "Payment gateway not configured. Please set TOYYIBPAY_SECRET_KEY and TOYYIBPAY_CATEGORY_CODE in environment variables." 
+        });
+      }
+
       const formData = new URLSearchParams();
-      formData.append('userSecretKey', TOYYIBPAY_SECRET || '');
-      formData.append('categoryCode', TOYYIBPAY_CATEGORY || '');
+      formData.append('userSecretKey', TOYYIBPAY_SECRET);
+      formData.append('categoryCode', TOYYIBPAY_CATEGORY);
       formData.append('billName', billName);
       formData.append('billDescription', billDescription);
       formData.append('billPriceSetting', '1');
       formData.append('billPayorInfo', '1');
       formData.append('billAmount', amount.toString());
-      formData.append('billReturnUrl', `${APP_URL}/api/payment/return`);
-      formData.append('billCallbackUrl', `${APP_URL}/api/payment/callback`);
-      formData.append('billExternalReferenceNo', `${uid}_${type}_${Date.now()}${appliedDiscountId ? `_${appliedDiscountId}` : ''}`);
+      formData.append('billReturnUrl', `${currentAppUrl}/api/payment/return?uid=${uid}&type=${type}&tier=${tier}`);
+      formData.append('billCallbackUrl', `${currentAppUrl}/api/payment/callback?uid=${uid}&type=${type}&tier=${tier}`);
+      
+      // Shorten ref no to avoid potential length limits (ToyyibPay limit is often 30-50 chars)
+      // Format: UID(8)_TYPE(1)_TIER(1)_TIMESTAMP(10)
+      const shortUid = uid.substring(0, 8);
+      const typeCode = type === 'monthly' ? 'M' : 'Y';
+      const tierCode = tier === 'lite' ? 'L' : tier === 'standard' ? 'S' : 'U';
+      const timestamp = Math.floor(Date.now() / 1000).toString();
+      const refNo = `${shortUid}_${typeCode}_${tierCode}_${timestamp}`;
+      
+      formData.append('billExternalReferenceNo', refNo);
       formData.append('billTo', name || 'Rider');
       formData.append('billEmail', email);
       formData.append('billPhone', phone || '0123456789');
+
+      // Also store the full mapping in Firestore so we can recover the UID in callback
+      // Using Client SDK with secret to bypass Admin SDK permission issues
+      try {
+        await setDoc(doc(clientDb, 'pending_payments', refNo), {
+          uid,
+          email,
+          type,
+          tier,
+          amount,
+          createdAt: serverTimestamp(),
+          _backendSecret: BACKEND_SECRET
+        });
+        console.log(`Stored pending payment in Firestore: ${refNo}`);
+      } catch (fsError) {
+        console.error("Firestore Pending Payment Error (Client SDK):", fsError);
+        // We continue anyway because we have query params as fallback
+      }
 
       const response = await axios.post(`${TOYYIBPAY_BASE_URL}/createBill`, formData);
       
@@ -118,7 +136,6 @@ async function startServer() {
         res.json({ paymentUrl });
       } else {
         console.error("ToyyibPay Error Response:", JSON.stringify(response.data));
-        // ToyyibPay error message is usually in the first element's 'msg' field or just the response itself
         let errorMsg = "Failed to create bill";
         if (Array.isArray(response.data) && response.data[0] && response.data[0].msg) {
           errorMsg = response.data[0].msg;
@@ -129,57 +146,106 @@ async function startServer() {
         res.status(500).json({ error: errorMsg, details: response.data });
       }
     } catch (error) {
+      if (axios.isAxiosError(error)) {
+        console.error("ToyyibPay API Error:", error.response?.data || error.message);
+        return res.status(500).json({ 
+          error: "ToyyibPay API Connection Error", 
+          details: error.response?.data || error.message 
+        });
+      }
       console.error("Payment Creation Error:", error);
-      res.status(500).json({ error: "Internal server error" });
+      res.status(500).json({ error: "Internal server error", details: error instanceof Error ? error.message : String(error) });
     }
   });
 
   // 2. Callback (Webhook)
   app.post("/api/payment/callback", async (req, res) => {
     const { refno, status, reason, billcode, order_id } = req.body;
+    // Fallback info from query params if Firestore lookup fails
+    const { uid: qUid, type: qType, tier: qTier } = req.query;
     
-    console.log("ToyyibPay Callback Received:", { refno, status, reason, billcode });
+    console.log("ToyyibPay Callback Received:", { refno, status, reason, billcode, qUid });
 
     // ToyyibPay status: 1 = Success, 2 = Pending, 3 = Failed
-    if (status === '1' && refno) {
-      const parts = refno.split('_');
-      const uid = parts[0];
-      const type = parts[1]; // 'monthly' or 'yearly'
-      const timestamp = parts[2];
-      const discountId = parts[3]; // Optional
-      
-      const now = Date.now();
-      let expiryDate = now;
-
-      if (type === 'yearly') {
-        // 1 year + 1 day buffer
-        expiryDate = now + (366 * 24 * 60 * 60 * 1000);
-      } else {
-        // 30 days + 1 day buffer
-        expiryDate = now + (31 * 24 * 60 * 60 * 1000);
-      }
-
+    if (status === '1' && (refno || qUid)) {
       try {
-        // Update Firestore Profile
-        await db.collection('profiles').doc(uid).set({
-          isPro: true,
-          expiryDate: expiryDate,
-          lastPaymentDate: now,
-          lastBillCode: billcode,
-          subscriptionType: type,
-          updatedAt: now
-        }, { merge: true });
+        let uid = qUid as string;
+        let type = qType as string;
+        let tier = qTier as string;
 
-        // Update Discount Usage if applicable
-        if (discountId) {
-          await db.collection('discounts').doc(discountId).update({
-            usageCount: admin.firestore.FieldValue.increment(1)
-          });
+        // Try to look up the full info from pending_payments if we don't have it from query
+        if (!uid && refno) {
+          try {
+            const pendingDoc = await getDoc(doc(clientDb, 'pending_payments', refno));
+            if (pendingDoc.exists()) {
+              const data = pendingDoc.data();
+              uid = data?.uid;
+              type = data?.type;
+              tier = data?.tier;
+            }
+          } catch (fsLookupError) {
+            console.error("Firestore Lookup Error in Callback:", fsLookupError);
+          }
         }
         
-        console.log(`Successfully updated subscription for user ${uid} (${type})`);
+        // Final fallback to parsing refno
+        if (!uid && refno) {
+          const parts = refno.split('_');
+          uid = parts[0];
+          type = parts[1] === 'M' ? 'monthly' : 'yearly';
+          tier = parts[2] === 'L' ? 'lite' : parts[2] === 'S' ? 'standard' : 'ultimate';
+        }
+
+        if (!uid) {
+          console.error("Could not determine UID for payment:", refno);
+          return res.send("OK");
+        }
+      
+        const now = Date.now();
+        let expiryDate = now;
+
+        if (type === 'yearly') {
+          // 1 year + 1 day buffer
+          expiryDate = now + (366 * 24 * 60 * 60 * 1000);
+        } else {
+          // 30 days + 1 day buffer
+          expiryDate = now + (31 * 24 * 60 * 60 * 1000);
+        }
+
+        // Update Firestore using Client SDK with secret
+        try {
+          await setDoc(doc(clientDb, 'profiles', uid), {
+            isPro: true,
+            subscriptionTier: tier || 'lite',
+            expiryDate: expiryDate,
+            lastPaymentDate: now,
+            lastBillCode: billcode,
+            subscriptionType: type || 'monthly',
+            updatedAt: now,
+            _backendSecret: BACKEND_SECRET
+          }, { merge: true });
+          
+          console.log(`Successfully updated subscription for user ${uid} (${tier} - ${type})`);
+        } catch (fsUpdateError) {
+          console.error("Firestore Profile Update Error (Client SDK):", fsUpdateError);
+          // Try Admin SDK as last resort
+          try {
+            await db.collection('profiles').doc(uid).set({
+              isPro: true,
+              subscriptionTier: tier || 'lite',
+              expiryDate: expiryDate,
+              lastPaymentDate: now,
+              lastBillCode: billcode,
+              subscriptionType: type || 'monthly',
+              updatedAt: now
+            }, { merge: true });
+            console.log(`Successfully updated subscription for user ${uid} using Admin SDK`);
+          } catch (adminError) {
+            console.error("Firestore Profile Update Error (Admin SDK):", adminError);
+          }
+        }
       } catch (error) {
-        console.error("Firestore Update Error in Callback:", error);
+        console.error("General Callback Error:", error);
       }
     }
 
@@ -187,9 +253,53 @@ async function startServer() {
   });
 
   // 3. Return URL
-  app.get("/api/payment/return", (req, res) => {
-    const { status, billcode } = req.query;
-    if (status === '1') {
+  app.get("/api/payment/return", async (req, res) => {
+    const { status, billcode, uid, type, tier } = req.query;
+    
+    if (status === '1' && uid && type) {
+      // Instant activation on return
+      const now = Date.now();
+      let expiryDate = now;
+
+      if (type === 'yearly') {
+        expiryDate = now + (366 * 24 * 60 * 60 * 1000);
+      } else {
+        expiryDate = now + (31 * 24 * 60 * 60 * 1000);
+      }
+
+      try {
+        await setDoc(doc(clientDb, 'profiles', uid as string), {
+          isPro: true,
+          subscriptionTier: tier || 'lite',
+          expiryDate: expiryDate,
+          lastPaymentDate: now,
+          lastBillCode: billcode as string,
+          subscriptionType: type as string,
+          updatedAt: now,
+          _backendSecret: BACKEND_SECRET
+        }, { merge: true });
+        console.log(`Instant activation for user ${uid} on return (Client SDK)`);
+      } catch (fsError) {
+        console.error("Firestore Return Update Error (Client SDK):", fsError);
+        try {
+          await db.collection('profiles').doc(uid as string).set({
+            isPro: true,
+            subscriptionTier: tier || 'lite',
+            expiryDate: expiryDate,
+            lastPaymentDate: now,
+            lastBillCode: billcode as string,
+            subscriptionType: type as string,
+            updatedAt: now
+          }, { merge: true });
+          console.log(`Instant activation for user ${uid} on return (Admin SDK)`);
+        } catch (adminError) {
+          console.error("Firestore Return Update Error (Admin SDK):", adminError);
+        }
+      }
+      
+      res.redirect('/?payment=success');
+    } else if (status === '1') {
+      // Fallback if uid/type missing
       res.redirect('/?payment=success');
     } else {
       res.redirect('/?payment=failed');

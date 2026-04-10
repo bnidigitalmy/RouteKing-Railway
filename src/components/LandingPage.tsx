@@ -28,9 +28,13 @@ import {
 interface LandingPageProps {
   onStart: () => void;
   isLoggingIn: boolean;
+  error?: string | null;
+  onClearError?: () => void;
+  success?: string | null;
+  onClearSuccess?: () => void;
 }
 
-export const LandingPage: React.FC<LandingPageProps> = ({ onStart, isLoggingIn }) => {
+export const LandingPage: React.FC<LandingPageProps> = ({ onStart, isLoggingIn, error, onClearError, success, onClearSuccess }) => {
   const [legalModal, setLegalModal] = useState<{ isOpen: boolean; type: 'privacy' | 'terms' }>({
     isOpen: false,
     type: 'privacy'
@@ -66,6 +70,38 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart, isLoggingIn }
           </button>
         </div>
       </nav>
+
+      {/* Success Message */}
+      {success && (
+        <div className="fixed top-24 left-1/2 -translate-x-1/2 z-[60] w-full max-w-md px-6">
+          <div className="bg-green-50 border-2 border-green-100 text-green-600 p-4 rounded-2xl flex items-start gap-3 shadow-xl animate-in fade-in slide-in-from-top-4">
+            <CheckCircle2 className="shrink-0 mt-0.5" size={18} />
+            <div className="flex-1">
+              <p className="text-sm font-bold">Pembayaran Berjaya</p>
+              <p className="text-xs opacity-80">{success}</p>
+            </div>
+            <button onClick={onClearSuccess} className="text-green-400 hover:text-green-600">
+              <XCircle size={18} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Error Message */}
+      {error && (
+        <div className="fixed top-24 left-1/2 -translate-x-1/2 z-[60] w-full max-w-md px-6">
+          <div className="bg-red-50 border-2 border-red-100 text-red-600 p-4 rounded-2xl flex items-start gap-3 shadow-xl animate-in fade-in slide-in-from-top-4">
+            <AlertTriangle className="shrink-0 mt-0.5" size={18} />
+            <div className="flex-1">
+              <p className="text-sm font-bold">Ralat Pembayaran</p>
+              <p className="text-xs opacity-80">{error}</p>
+            </div>
+            <button onClick={onClearError} className="text-red-400 hover:text-red-600">
+              <XCircle size={18} />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Hero Section */}
       <section className="pt-40 pb-20 px-6 overflow-hidden">
@@ -430,57 +466,121 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart, isLoggingIn }
       </section>
 
       {/* Pricing Section */}
-      <section className="py-24 px-6">
+      <section className="py-24 px-6 bg-gray-50">
         <div className="max-w-7xl mx-auto">
-          <div className="bg-gray-900 rounded-[3rem] p-12 lg:p-20 relative overflow-hidden">
-            <div className="absolute top-0 right-0 w-96 h-96 bg-blue-600/20 rounded-full blur-[100px] -mr-48 -mt-48"></div>
-            
-            <div className="grid lg:grid-cols-2 gap-16 items-center relative z-10">
-              <div className="space-y-8">
-                <h2 className="text-4xl lg:text-5xl font-black text-white leading-tight">
-                  Pelaburan Kecil Untuk <br />
-                  <span className="text-blue-400">Hasil Yang Besar.</span>
-                </h2>
-                <div className="space-y-4">
-                  {[
-                    "Akses Penuh Semua Ciri",
-                    "Scanner AI & Optimasi Laluan",
-                    "Smart Memory & Pin Disahkan",
-                    "WhatsApp Auto-Template",
-                    "Simpan Sejarah Tanpa Had",
-                    "Sokongan Pelanggan VIP"
-                  ].map((item, i) => (
-                    <div key={i} className="flex items-center gap-3 text-gray-300">
-                      <CheckCircle2 className="text-blue-400" size={20} />
-                      <span className="font-bold">{item}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
+          <div className="text-center max-w-3xl mx-auto mb-16 space-y-4">
+            <h2 className="text-3xl lg:text-5xl font-black text-gray-900 tracking-tight">
+              Pilih Pelan <span className="text-blue-600">Terbaik</span> Untuk Anda
+            </h2>
+            <p className="text-gray-500 font-medium">Pelaburan kecil untuk hasil yang besar setiap hari.</p>
+          </div>
 
-              <div className="bg-white rounded-[2.5rem] p-8 lg:p-12 shadow-2xl">
-                <div className="inline-block px-4 py-1 bg-blue-100 text-blue-700 rounded-full text-[10px] font-black uppercase tracking-widest mb-6">
-                  Pakej Promo (100 Rider Pertama)
+          <div className="grid lg:grid-cols-3 gap-8">
+            {/* Lite Tier */}
+            <div className="bg-white rounded-[2.5rem] p-8 shadow-sm border border-gray-100 flex flex-col">
+              <div className="mb-6">
+                <div className="inline-block px-4 py-1 bg-blue-50 text-blue-700 rounded-full text-[10px] font-black uppercase tracking-widest mb-4">
+                  Rider Santai
                 </div>
-                <div className="flex items-baseline gap-2 mb-2">
-                  <span className="text-5xl font-black text-gray-900">RM14.90</span>
+                <h3 className="text-2xl font-black text-gray-900">Lite</h3>
+                <div className="flex items-baseline gap-1 mt-2">
+                  <span className="text-4xl font-black text-gray-900">RM14.90</span>
                   <span className="text-gray-400 font-bold">/ bulan</span>
                 </div>
-                <div className="mb-8">
-                  <span className="text-sm text-gray-400 line-through font-bold">Harga Asal: RM29.90</span>
-                </div>
-                <p className="text-gray-500 mb-8 font-medium">Hanya 50 sen sehari untuk kerja yang lebih tersusun, jimat minyak, dan kurang stress.</p>
-                <button 
-                  onClick={onStart}
-                  disabled={isLoggingIn}
-                  className="w-full py-5 bg-blue-600 text-white rounded-2xl font-black text-xl shadow-xl shadow-blue-100 hover:bg-blue-700 transition-all active:scale-95"
-                >
-                  {isLoggingIn ? 'Menyambung...' : 'Langgan Sekarang'}
-                </button>
-                <p className="text-center mt-6 text-xs text-gray-400 font-bold uppercase tracking-widest">
-                  Boleh Batalkan Bila-Bila Masa
-                </p>
               </div>
+              <ul className="space-y-4 mb-8 flex-1">
+                {[
+                  "80 Scan/Hari",
+                  "Optimasi Laluan Basic",
+                  "OSM Geocoding Only",
+                  "WhatsApp Template",
+                  "Simpan Sejarah 7 Hari"
+                ].map((item, i) => (
+                  <li key={i} className="flex items-center gap-3 text-gray-600 text-sm font-bold">
+                    <CheckCircle2 className="text-blue-500 shrink-0" size={18} />
+                    {item}
+                  </li>
+                ))}
+              </ul>
+              <button 
+                onClick={onStart}
+                className="w-full py-4 bg-gray-100 text-gray-900 rounded-2xl font-black hover:bg-blue-600 hover:text-white transition-all active:scale-95"
+              >
+                Mula Sekarang
+              </button>
+            </div>
+
+            {/* Standard Tier */}
+            <div className="bg-white rounded-[2.5rem] p-8 shadow-2xl border-4 border-blue-600 flex flex-col relative scale-105 z-10">
+              <div className="absolute top-0 right-8 -translate-y-1/2 bg-blue-600 text-white px-4 py-1 rounded-full text-[10px] font-black uppercase tracking-widest">
+                Paling Popular
+              </div>
+              <div className="mb-6">
+                <div className="inline-block px-4 py-1 bg-blue-100 text-blue-700 rounded-full text-[10px] font-black uppercase tracking-widest mb-4">
+                  Rider Full-Time
+                </div>
+                <h3 className="text-2xl font-black text-gray-900">Standard</h3>
+                <div className="flex items-baseline gap-1 mt-2">
+                  <span className="text-4xl font-black text-gray-900">RM29.90</span>
+                  <span className="text-gray-400 font-bold">/ bulan</span>
+                </div>
+              </div>
+              <ul className="space-y-4 mb-8 flex-1">
+                {[
+                  "180 Scan/Hari",
+                  "Optimasi Laluan Advance",
+                  "Google Maps Fallback",
+                  "Smart Memory (Auto-Pin)",
+                  "Simpan Sejarah 30 Hari",
+                  "Sokongan WhatsApp"
+                ].map((item, i) => (
+                  <li key={i} className="flex items-center gap-3 text-gray-600 text-sm font-bold">
+                    <CheckCircle2 className="text-blue-500 shrink-0" size={18} />
+                    {item}
+                  </li>
+                ))}
+              </ul>
+              <button 
+                onClick={onStart}
+                className="w-full py-4 bg-blue-600 text-white rounded-2xl font-black shadow-xl shadow-blue-200 hover:bg-blue-700 transition-all active:scale-95"
+              >
+                Pilih Standard
+              </button>
+            </div>
+
+            {/* Ultimate Tier */}
+            <div className="bg-white rounded-[2.5rem] p-8 shadow-sm border border-gray-100 flex flex-col">
+              <div className="mb-6">
+                <div className="inline-block px-4 py-1 bg-orange-50 text-orange-700 rounded-full text-[10px] font-black uppercase tracking-widest mb-4">
+                  Rider Ultimate
+                </div>
+                <h3 className="text-2xl font-black text-gray-900">Ultimate</h3>
+                <div className="flex items-baseline gap-1 mt-2">
+                  <span className="text-4xl font-black text-gray-900">RM49.90</span>
+                  <span className="text-gray-400 font-bold">/ bulan</span>
+                </div>
+              </div>
+              <ul className="space-y-4 mb-8 flex-1">
+                {[
+                  "400 Scan/Hari",
+                  "Priority AI Processing",
+                  "Unlimited History",
+                  "Custom WhatsApp Template",
+                  "Priority Support VIP",
+                  "Akses Ciri Baru Awal"
+                ].map((item, i) => (
+                  <li key={i} className="flex items-center gap-3 text-gray-600 text-sm font-bold">
+                    <CheckCircle2 className="text-orange-500 shrink-0" size={18} />
+                    {item}
+                  </li>
+                ))}
+              </ul>
+              <button 
+                onClick={onStart}
+                className="w-full py-4 bg-gray-900 text-white rounded-2xl font-black hover:bg-blue-600 transition-all active:scale-95"
+              >
+                Pilih Ultimate
+              </button>
             </div>
           </div>
         </div>

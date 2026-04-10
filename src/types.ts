@@ -31,6 +31,7 @@ export interface UserProfile {
   trialStartedAt?: number;
   expiryDate?: number;
   subscriptionType?: 'monthly' | 'yearly';
+  subscriptionTier?: 'free' | 'lite' | 'standard' | 'ultimate';
   dailyScanCount?: number;
   lastScanResetDate?: string; // ISO date string YYYY-MM-DD
   monthlyScanCount?: number;

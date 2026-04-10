@@ -45,24 +45,47 @@
       },
       "required": ["address", "lat", "lng"]
     },
-    "discount": {
-      "title": "Discount",
-      "description": "Discount codes for subscriptions",
+    "profile": {
+      "title": "UserProfile",
+      "description": "User profile and subscription information",
       "type": "object",
       "properties": {
-        "code": { "type": "string", "description": "The discount code (e.g. RIDER50)" },
-        "type": { "type": "string", "enum": ["percentage", "fixed"], "description": "Type of discount" },
-        "value": { "type": "number", "description": "Value of the discount (e.g. 10 for 10% or RM10)" },
-        "expiryDate": { "type": "number", "description": "Timestamp when the code expires" },
-        "usageLimit": { "type": "number", "description": "Maximum number of times the code can be used" },
-        "usageCount": { "type": "number", "description": "Current usage count" },
-        "isActive": { "type": "boolean", "description": "Whether the code is active" },
-        "createdAt": { "type": "number" }
+        "uid": { "type": "string" },
+        "riderName": { "type": "string" },
+        "courierCompany": { "type": "string" },
+        "isPro": { "type": "boolean" },
+        "subscriptionTier": { "type": "string", "enum": ["free", "lite", "standard", "ultimate"] },
+        "trialStartedAt": { "type": "number" },
+        "expiryDate": { "type": "number" },
+        "subscriptionType": { "type": "string" },
+        "role": { "type": "string" }
       },
-      "required": ["code", "type", "value", "isActive"]
+      "required": ["uid", "riderName", "courierCompany"]
+    },
+    "pending_payment": {
+      "title": "PendingPayment",
+      "description": "Temporary storage for payment session data",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "type": { "type": "string" },
+        "tier": { "type": "string" },
+        "amount": { "type": "number" },
+        "createdAt": { "type": "object" }
+      },
+      "required": ["uid", "email", "type", "tier", "amount"]
     }
   },
   "firestore": {
+    "/profiles/{userId}": {
+      "schema": "profile",
+      "description": "User profile and subscription data"
+    },
+    "/pending_payments/{refNo}": {
+      "schema": "pending_payment",
+      "description": "Payment sessions awaiting callback"
+    },
     "/parcels/{parcelId}": {
       "schema": "parcel",
       "description": "Individual parcel documents"
@@ -78,10 +101,6 @@
     "/users/{userId}/verified_addresses/{addressHash}": {
       "schema": "geocache",
       "description": "User-specific verified addresses with notes"
-    },
-    "/discounts/{discountId}": {
-      "schema": "discount",
-      "description": "Subscription discount codes"
     }
   }
 }

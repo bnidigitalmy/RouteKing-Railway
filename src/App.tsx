@@ -3,7 +3,7 @@ import axios from 'axios';
 import { LandingPage } from './components/LandingPage';
 import { AdminDashboard } from './components/AdminDashboard';
 import { Plus, MapPin, Navigation, Trash2, RefreshCw, Package, ArrowRight, Camera, Search, LayoutGrid, List, Map, Filter, Folder, MoreVertical, LogOut, LogIn, AlertCircle, X, Edit2, User as UserIcon, CheckCircle2, Copy, Share2, ChevronDown, ChevronRight, ShieldCheck, Truck, Settings, Banknote, HelpCircle } from 'lucide-react';
-import { Parcel, UserProfile, Discount } from './types';
+import { Parcel, UserProfile } from './types';
 import { Scanner } from './components/Scanner';
 import { LegalModal } from './components/LegalModal';
 import { ParcelCard } from './components/ParcelCard';
@@ -39,10 +39,12 @@ import {
   User 
 } from './firebase';
 
-const FREE_DAILY_LIMIT = 50;
-const PRO_DAILY_LIMIT = 300;
-const FREE_MONTHLY_LIMIT = 500;
-const PRO_MONTHLY_LIMIT = 5000;
+const TIER_LIMITS = {
+  free: { daily: 30, monthly: 500 },
+  lite: { daily: 80, monthly: 1500 },
+  standard: { daily: 180, monthly: 3500 },
+  ultimate: { daily: 400, monthly: 8000 }
+};
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -86,10 +88,7 @@ export default function App() {
     type: 'privacy'
   });
   const [isSubscriptionModalOpen, setIsSubscriptionModalOpen] = useState(false);
-  const [discountCode, setDiscountCode] = useState('');
-  const [appliedDiscount, setAppliedDiscount] = useState<Discount | null>(null);
-  const [isValidatingDiscount, setIsValidatingDiscount] = useState(false);
-  const [discountError, setDiscountError] = useState<string | null>(null);
+  const [isTrialExpired, setIsTrialExpired] = useState(false);
   const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [isSavingEdit, setIsSavingEdit] = useState(false);
@@ -103,6 +102,8 @@ export default function App() {
   const [ratePerParcel, setRatePerParcel] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [paymentUrl, setPaymentUrl] = useState<string | null>(null);
+  const [paymentFailed, setPaymentFailed] = useState(false);
+  const [paymentSuccess, setPaymentSuccess] = useState(false);
 
   // Default start point (Hub)
   const [startPoint, setStartPoint] = useState({ lat: 3.1390, lng: 101.6869 });
@@ -127,6 +128,7 @@ export default function App() {
     // Check for payment status in URL
     const urlParams = new URLSearchParams(window.location.search);
     if (urlParams.get('payment') === 'success') {
+      setPaymentSuccess(true);
       confetti({
         particleCount: 150,
         spread: 100,
@@ -137,6 +139,7 @@ export default function App() {
     } else if (urlParams.get('payment') === 'failed') {
       setError("Pembayaran tidak berjaya atau telah dibatalkan. Sila cuba lagi.");
       setIsSubscriptionModalOpen(true);
+      setPaymentFailed(true);
       window.history.replaceState({}, document.title, "/");
     }
 
@@ -216,10 +219,13 @@ export default function App() {
         const trialExpired = (now - data.trialStartedAt > trialMs) || isTester;
         const subscriptionActive = data.isPro && data.expiryDate && now < data.expiryDate;
         
-        if (!subscriptionActive && trialExpired) {
+        setIsTrialExpired(trialExpired);
+
+        if (!subscriptionActive && (trialExpired || paymentFailed)) {
           setIsSubscriptionModalOpen(true);
-        } else {
+        } else if (subscriptionActive) {
           setIsSubscriptionModalOpen(false);
+          setPaymentFailed(false);
         }
       } else {
         // New user - prompt for profile setup
@@ -253,8 +259,9 @@ export default function App() {
     const currentDailyCount = isNewDay ? 0 : (profile.dailyScanCount || 0);
     const currentMonthlyCount = isNewMonth ? 0 : (profile.monthlyScanCount || 0);
 
-    const dailyLimit = profile.isPro ? PRO_DAILY_LIMIT : FREE_DAILY_LIMIT;
-    const monthlyLimit = profile.isPro ? PRO_MONTHLY_LIMIT : FREE_MONTHLY_LIMIT;
+    const tier = profile.subscriptionTier || 'free';
+    const dailyLimit = TIER_LIMITS[tier].daily;
+    const monthlyLimit = TIER_LIMITS[tier].monthly;
 
     if (currentDailyCount >= dailyLimit) {
       setIsScannerOpen(false);
@@ -611,62 +618,20 @@ export default function App() {
     }
   };
 
-  const validateDiscountCode = async () => {
-    if (!discountCode.trim()) return;
-    setIsValidatingDiscount(true);
-    setDiscountError(null);
-    try {
-      const q = query(
-        collection(db, 'discounts'), 
-        where('code', '==', discountCode.toUpperCase().trim()),
-        where('isActive', '==', true)
-      );
-      const snapshot = await getDocs(q);
-      
-      if (snapshot.empty) {
-        setDiscountError("Kod diskaun tidak sah");
-        setAppliedDiscount(null);
-        return;
-      }
-
-      const data = { id: snapshot.docs[0].id, ...snapshot.docs[0].data() } as Discount;
-      
-      // Check expiry
-      if (data.expiryDate && data.expiryDate < Date.now()) {
-        setDiscountError("Kod diskaun telah tamat tempoh");
-        setAppliedDiscount(null);
-        return;
-      }
-
-      // Check usage limit
-      if (data.usageLimit && data.usageCount >= data.usageLimit) {
-        setDiscountError("Kod diskaun telah mencapai had penggunaan");
-        setAppliedDiscount(null);
-        return;
-      }
-
-      setAppliedDiscount(data);
-      setDiscountError(null);
-    } catch (err) {
-      console.error("Discount validation error:", err);
-      setDiscountError("Ralat mengesahkan kod");
-    } finally {
-      setIsValidatingDiscount(false);
-    }
-  };
-
-  const handleRealPayment = async (type: 'monthly' | 'yearly') => {
+  const handleRealPayment = async (tier: 'lite' | 'standard' | 'ultimate', type: 'monthly' | 'yearly') => {
     if (!user) return;
     setIsSavingProfile(true);
     setError(null);
     setPaymentUrl(null);
+    setPaymentFailed(false);
     try {
       const response = await axios.post('/api/payment/create', {
         uid: user.uid,
         email: user.email,
         name: riderName || user.displayName,
-        type: type,
-        discountCode: appliedDiscount?.code
+        phone: profile?.phone || '',
+        tier: tier,
+        type: type
       });
       
       if (response.data.paymentUrl) {
@@ -825,7 +790,16 @@ export default function App() {
   }
 
   if (!user) {
-    return <LandingPage onStart={handleSignIn} isLoggingIn={isSigningIn} />;
+    return (
+      <LandingPage 
+        onStart={handleSignIn} 
+        isLoggingIn={isSigningIn} 
+        error={error}
+        onClearError={() => setError(null)}
+        success={paymentSuccess ? "Akaun anda telah berjaya dinaiktaraf!" : null}
+        onClearSuccess={() => setPaymentSuccess(false)}
+      />
+    );
   }
 
   const deliveredToday = parcels.filter(p => 
@@ -1274,7 +1248,7 @@ export default function App() {
               onClose={() => setIsScannerOpen(false)} 
               quota={profile ? {
                 current: profile.dailyScanCount || 0,
-                limit: profile.isPro ? PRO_DAILY_LIMIT : FREE_DAILY_LIMIT
+                limit: TIER_LIMITS[profile.subscriptionTier || 'free'].daily
               } : undefined}
             />
           )}
@@ -1287,7 +1261,7 @@ export default function App() {
               onClose={() => setIsMarkingModeOpen(false)} 
               quota={profile ? {
                 current: profile.dailyScanCount || 0,
-                limit: profile.isPro ? PRO_DAILY_LIMIT : FREE_DAILY_LIMIT
+                limit: TIER_LIMITS[profile.subscriptionTier || 'free'].daily
               } : undefined}
             />
           )}
@@ -1787,21 +1761,34 @@ export default function App() {
                             <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Kuota Scan (Harian)</span>
                             <span className={cn(
                               "text-xs font-black",
-                              (profile.dailyScanCount || 0) >= (profile.isPro ? PRO_DAILY_LIMIT : FREE_DAILY_LIMIT) ? "text-red-600" : "text-blue-600"
+                              (profile.dailyScanCount || 0) >= TIER_LIMITS[profile.subscriptionTier || 'free'].daily ? "text-red-600" : "text-blue-600"
                             )}>
-                              {profile.dailyScanCount || 0} / {profile.isPro ? PRO_DAILY_LIMIT : FREE_DAILY_LIMIT}
+                              {profile.dailyScanCount || 0} / {TIER_LIMITS[profile.subscriptionTier || 'free'].daily}
                             </span>
                           </div>
                           <div className="flex justify-between items-center">
                             <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Kuota Scan (Bulanan)</span>
                             <span className={cn(
                               "text-xs font-black",
-                              (profile.monthlyScanCount || 0) >= (profile.isPro ? PRO_MONTHLY_LIMIT : FREE_MONTHLY_LIMIT) ? "text-red-600" : "text-blue-600"
+                              (profile.monthlyScanCount || 0) >= TIER_LIMITS[profile.subscriptionTier || 'free'].monthly ? "text-red-600" : "text-blue-600"
                             )}>
-                              {profile.monthlyScanCount || 0} / {profile.isPro ? PRO_MONTHLY_LIMIT : FREE_MONTHLY_LIMIT}
+                              {profile.monthlyScanCount || 0} / {TIER_LIMITS[profile.subscriptionTier || 'free'].monthly}
                             </span>
                           </div>
                         </div>
+                        
+                        {!profile.isPro && (
+                          <button 
+                            onClick={() => {
+                              setIsProfileModalOpen(false);
+                              setIsSubscriptionModalOpen(true);
+                            }}
+                            className="w-full mt-4 py-3 bg-orange-500 hover:bg-orange-600 text-white font-black rounded-xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-orange-100 active:scale-95"
+                          >
+                            <ShieldCheck size={18} />
+                            UPGRADE KE PRO SEKARANG
+                          </button>
+                        )}
                       </div>
                     )}
 
@@ -1887,6 +1874,36 @@ export default function App() {
         <AdminDashboard onClose={() => setIsAdminDashboardOpen(false)} />
       )}
 
+      {/* Payment Success Overlay */}
+      <AnimatePresence>
+        {paymentSuccess && (
+          <div className="fixed inset-0 bg-black/60 z-[200] flex items-center justify-center p-6 backdrop-blur-sm">
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white w-full max-w-sm rounded-[2.5rem] p-8 text-center space-y-6 shadow-2xl"
+            >
+              <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center mx-auto text-green-600">
+                <CheckCircle2 size={48} />
+              </div>
+              <div className="space-y-2">
+                <h3 className="text-2xl font-black text-gray-900 tracking-tight">Pembayaran Berjaya!</h3>
+                <p className="text-gray-500 font-medium">
+                  Terima kasih! Akaun anda telah dinaiktaraf ke pelan Pro. Selamat menggunakan RouteKing!
+                </p>
+              </div>
+              <button 
+                onClick={() => setPaymentSuccess(false)}
+                className="w-full py-4 bg-blue-600 text-white rounded-2xl font-black shadow-lg shadow-blue-100 hover:bg-blue-700 transition-all active:scale-95"
+              >
+                Mula Sekarang
+              </button>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
       {/* Subscription Modal */}
       {isSubscriptionModalOpen && (
         <div className="fixed inset-0 bg-black/80 z-[100] overflow-y-auto p-4 backdrop-blur-md flex justify-center items-start sm:items-center py-8">
@@ -1898,6 +1915,17 @@ export default function App() {
             <div className="absolute top-0 right-0 -mr-12 -mt-12 w-40 h-40 bg-blue-50 rounded-full" />
             
             <div className="relative z-10 text-center p-8 space-y-6">
+              {(!isTrialExpired || paymentFailed) && !isSavingProfile && (
+                <button 
+                  onClick={() => {
+                    setIsSubscriptionModalOpen(false);
+                    setPaymentFailed(false);
+                  }}
+                  className="absolute top-0 right-0 p-2 text-gray-400 hover:text-gray-600 transition-colors"
+                >
+                  <X size={24} />
+                </button>
+              )}
               {isSavingProfile ? (
                 <div className="py-20 flex flex-col items-center justify-center space-y-4">
                   <RefreshCw className="animate-spin text-blue-600" size={48} />
@@ -1911,9 +1939,13 @@ export default function App() {
                   </div>
                   
                   <div className="space-y-2">
-                    <h3 className="font-black text-2xl text-gray-900 tracking-tight">Masa Percubaan Tamat</h3>
+                    <h3 className="font-black text-2xl text-gray-900 tracking-tight">
+                      {paymentFailed ? "Pembayaran Tidak Berjaya" : "Masa Percubaan Tamat"}
+                    </h3>
                     <p className="text-gray-600 leading-relaxed">
-                      Tempoh percubaan 7 hari anda telah tamat. Langgan sekarang untuk terus menggunakan RouteKing.
+                      {paymentFailed 
+                        ? "Maaf, pembayaran anda tidak berjaya atau telah dibatalkan. Sila cuba lagi untuk mengaktifkan akaun Pro anda."
+                        : "Tempoh percubaan 7 hari anda telah tamat. Langgan sekarang untuk terus menggunakan RouteKing."}
                     </p>
                   </div>
 
@@ -1953,113 +1985,66 @@ export default function App() {
                       </button>
                     </div>
                   ) : (
-                    <div className="space-y-4 pt-4">
-                      <div className="flex flex-col gap-2">
-                        <div className="flex gap-2">
-                          <input 
-                            type="text"
-                            placeholder="Kod Diskaun"
-                            className="flex-1 bg-gray-50 border-2 border-gray-100 rounded-xl py-3 px-4 text-sm font-bold uppercase outline-none focus:border-blue-500 transition-all"
-                            value={discountCode}
-                            onChange={(e) => setDiscountCode(e.target.value)}
-                            disabled={isValidatingDiscount || !!appliedDiscount}
-                          />
-                          {appliedDiscount ? (
-                            <button 
-                              onClick={() => {
-                                setAppliedDiscount(null);
-                                setDiscountCode('');
-                              }}
-                              className="px-4 bg-red-50 text-red-600 rounded-xl font-bold text-xs uppercase"
-                            >
-                              Batal
-                            </button>
-                          ) : (
-                            <button 
-                              onClick={validateDiscountCode}
-                              disabled={isValidatingDiscount || !discountCode.trim()}
-                              className="px-6 bg-gray-900 text-white rounded-xl font-black text-xs uppercase tracking-widest disabled:opacity-50"
-                            >
-                              {isValidatingDiscount ? <RefreshCw size={14} className="animate-spin" /> : 'Guna'}
-                            </button>
-                          )}
+                    <div className="space-y-3 pt-4 max-h-[60vh] overflow-y-auto px-2">
+                      {/* Lite Tier */}
+                      <button 
+                        disabled={isSavingProfile}
+                        className={cn(
+                          "w-full p-4 bg-blue-50 rounded-3xl border-2 border-blue-100 text-left relative overflow-hidden group hover:border-blue-300 transition-all disabled:opacity-50",
+                          isSavingProfile && "cursor-not-allowed"
+                        )} 
+                        onClick={() => handleRealPayment('lite', 'monthly')}
+                      >
+                        <div className="flex justify-between items-center mb-1">
+                          <span className="font-black text-blue-900">Lite</span>
+                          <span className="bg-blue-600 text-white text-[10px] font-bold px-2 py-1 rounded-full">80 SCAN/HARI</span>
                         </div>
-                        {discountError && <p className="text-[10px] text-red-500 font-bold px-1">{discountError}</p>}
-                        {appliedDiscount && (
-                          <p className="text-[10px] text-green-600 font-bold px-1 flex items-center gap-1">
-                            <CheckCircle2 size={10} />
-                            Kod Berjaya: {appliedDiscount.type === 'percentage' ? `${appliedDiscount.value}%` : `RM${appliedDiscount.value}`} OFF
-                          </p>
-                        )}
-                      </div>
+                        <div className="flex items-baseline gap-1">
+                          <span className="text-xl font-black text-blue-600">RM14.90</span>
+                          <span className="text-xs text-blue-400 font-bold">/ bulan</span>
+                        </div>
+                        <p className="text-[10px] text-blue-400 mt-1 font-bold uppercase tracking-widest">Basic Routing • OSM Only</p>
+                      </button>
 
-                      <div className="space-y-3">
-                        <button 
-                          disabled={isSavingProfile}
-                          className={cn(
-                            "w-full p-6 bg-blue-50 rounded-3xl border-2 border-blue-100 text-left relative overflow-hidden group hover:border-blue-300 transition-all disabled:opacity-50",
-                            isSavingProfile && "cursor-not-allowed"
-                          )} 
-                          onClick={() => handleRealPayment('monthly')}
-                        >
-                          <div className="flex justify-between items-center mb-1">
-                            <span className="font-black text-blue-900">Bulanan</span>
-                            <span className="bg-blue-600 text-white text-[10px] font-bold px-2 py-1 rounded-full">POPULAR</span>
-                          </div>
-                          <div className="flex items-baseline gap-1">
-                            <span className="text-2xl font-black text-blue-600">
-                              RM{appliedDiscount ? (
-                                appliedDiscount.type === 'percentage' 
-                                  ? (14.90 * (1 - appliedDiscount.value / 100)).toFixed(2)
-                                  : Math.max(0, 14.90 - appliedDiscount.value).toFixed(2)
-                              ) : '14.90'}
-                            </span>
-                            <span className="text-xs text-blue-400 font-bold">/ bulan</span>
-                          </div>
-                          {appliedDiscount && (
-                            <p className="text-[10px] text-blue-400 line-through font-bold">RM14.90</p>
-                          )}
-                          <p className="text-[10px] text-blue-400 mt-2 font-bold uppercase tracking-widest">Akses Penuh • Tanpa Had</p>
-                          {isSavingProfile && (
-                            <div className="absolute inset-0 bg-blue-50/50 flex items-center justify-center">
-                              <RefreshCw className="animate-spin text-blue-600" size={24} />
-                            </div>
-                          )}
-                        </button>
+                      {/* Standard Tier */}
+                      <button 
+                        disabled={isSavingProfile}
+                        className={cn(
+                          "w-full p-4 bg-purple-50 rounded-3xl border-2 border-purple-100 text-left relative overflow-hidden group hover:border-purple-300 transition-all disabled:opacity-50",
+                          isSavingProfile && "cursor-not-allowed"
+                        )} 
+                        onClick={() => handleRealPayment('standard', 'monthly')}
+                      >
+                        <div className="flex justify-between items-center mb-1">
+                          <span className="font-black text-purple-900">Standard</span>
+                          <span className="bg-purple-600 text-white text-[10px] font-bold px-2 py-1 rounded-full">180 SCAN/HARI</span>
+                        </div>
+                        <div className="flex items-baseline gap-1">
+                          <span className="text-xl font-black text-purple-600">RM29.90</span>
+                          <span className="text-xs text-purple-400 font-bold">/ bulan</span>
+                        </div>
+                        <p className="text-[10px] text-purple-400 mt-1 font-bold uppercase tracking-widest">Advanced Routing • Gmaps Fallback</p>
+                      </button>
 
-                        <button 
-                          disabled={isSavingProfile}
-                          className={cn(
-                            "w-full p-6 bg-gray-50 rounded-3xl border-2 border-gray-100 text-left relative overflow-hidden group hover:border-blue-200 transition-all disabled:opacity-50",
-                            isSavingProfile && "cursor-not-allowed"
-                          )} 
-                          onClick={() => handleRealPayment('yearly')}
-                        >
-                          <div className="flex justify-between items-center mb-1">
-                            <span className="font-black text-gray-900">Tahunan</span>
-                            <span className="bg-green-500 text-white text-[10px] font-bold px-2 py-1 rounded-full">JIMAT RM60</span>
-                          </div>
-                          <div className="flex items-baseline gap-1">
-                            <span className="text-2xl font-black text-gray-800">
-                              RM{appliedDiscount ? (
-                                appliedDiscount.type === 'percentage' 
-                                  ? (119.00 * (1 - appliedDiscount.value / 100)).toFixed(2)
-                                  : Math.max(0, 119.00 - appliedDiscount.value).toFixed(2)
-                              ) : '119.00'}
-                            </span>
-                            <span className="text-xs text-gray-400 font-bold">/ tahun</span>
-                          </div>
-                          {appliedDiscount && (
-                            <p className="text-[10px] text-gray-400 line-through font-bold">RM119.00</p>
-                          )}
-                          <p className="text-[10px] text-gray-400 mt-2 font-bold uppercase tracking-widest">Akses Penuh • 12 Bulan</p>
-                          {isSavingProfile && (
-                            <div className="absolute inset-0 bg-gray-50/50 flex items-center justify-center">
-                              <RefreshCw className="animate-spin text-gray-600" size={24} />
-                            </div>
-                          )}
-                        </button>
-                      </div>
+                      {/* Ultimate Tier */}
+                      <button 
+                        disabled={isSavingProfile}
+                        className={cn(
+                          "w-full p-4 bg-orange-50 rounded-3xl border-2 border-orange-100 text-left relative overflow-hidden group hover:border-orange-300 transition-all disabled:opacity-50",
+                          isSavingProfile && "cursor-not-allowed"
+                        )} 
+                        onClick={() => handleRealPayment('ultimate', 'monthly')}
+                      >
+                        <div className="flex justify-between items-center mb-1">
+                          <span className="font-black text-orange-900">Ultimate</span>
+                          <span className="bg-orange-600 text-white text-[10px] font-bold px-2 py-1 rounded-full">400 SCAN/HARI</span>
+                        </div>
+                        <div className="flex items-baseline gap-1">
+                          <span className="text-xl font-black text-orange-600">RM49.90</span>
+                          <span className="text-xs text-orange-400 font-bold">/ bulan</span>
+                        </div>
+                        <p className="text-[10px] text-orange-400 mt-1 font-bold uppercase tracking-widest">Priority Support • Unlimited History</p>
+                      </button>
                     </div>
                   )}
 
