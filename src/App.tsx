@@ -818,8 +818,13 @@ export default function App() {
         <div className="relative z-10">
           <div className="flex items-center justify-between mb-6">
             <div className="flex items-center gap-3">
-              <div className="w-12 h-12 bg-white/20 backdrop-blur-md rounded-2xl flex items-center justify-center border border-white/30 shadow-xl">
-                <Truck size={28} className="text-white" />
+              <div className="w-12 h-12 bg-white rounded-2xl shadow-xl flex items-center justify-center overflow-hidden p-1">
+                <img 
+                  src="/logo.png" 
+                  alt="RouteKing Logo" 
+                  className="w-full h-full object-cover rounded-xl"
+                  referrerPolicy="no-referrer"
+                />
               </div>
               <div>
                 <h1 className="text-2xl font-black tracking-tight leading-none">RouteKing</h1>

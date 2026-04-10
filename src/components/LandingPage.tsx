@@ -56,9 +56,12 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart, isLoggingIn, 
       <nav className="fixed top-0 left-0 right-0 z-50 bg-white/80 backdrop-blur-md border-b border-gray-100">
         <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white shadow-lg shadow-blue-200">
-              <Navigation size={24} />
-            </div>
+            <img 
+              src="/logo.png" 
+              alt="RouteKing Logo" 
+              className="w-10 h-10 rounded-xl object-cover"
+              referrerPolicy="no-referrer"
+            />
             <span className="text-xl font-black tracking-tighter text-gray-900">RouteKing</span>
           </div>
           <button 
@@ -611,9 +614,12 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart, isLoggingIn, 
       <footer className="py-12 border-t border-gray-100">
         <div className="max-w-7xl mx-auto px-6 flex flex-col md:flex-row justify-between items-center gap-6">
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white">
-              <Navigation size={18} />
-            </div>
+            <img 
+              src="/logo.png" 
+              alt="RouteKing Logo" 
+              className="w-8 h-8 rounded-lg object-cover"
+              referrerPolicy="no-referrer"
+            />
             <span className="text-lg font-black tracking-tighter text-gray-900">RouteKing</span>
           </div>
           <p className="text-gray-400 text-sm font-medium">© 2026 RouteKing Malaysia. Hak Cipta Terpelihara.</p>
