@@ -40,10 +40,10 @@ import {
 } from './firebase';
 
 const TIER_LIMITS = {
-  free: { daily: 30, monthly: 500 },
-  lite: { daily: 80, monthly: 1500 },
-  standard: { daily: 180, monthly: 3500 },
-  ultimate: { daily: 400, monthly: 8000 }
+  free: { daily: 30, monthly: 210 },
+  lite: { daily: 80, monthly: 2000 },
+  standard: { daily: 180, monthly: 4500 },
+  ultimate: { daily: 400, monthly: 10000 }
 };
 
 export default function App() {

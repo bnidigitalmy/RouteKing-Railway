@@ -57,7 +57,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart, isLoggingIn, 
         <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <img 
-              src="/logo.png" 
+              src="/logopwa.png" 
               alt="RouteKing Logo" 
               className="w-10 h-10 rounded-xl object-cover"
               referrerPolicy="no-referrer"
@@ -615,7 +615,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart, isLoggingIn, 
         <div className="max-w-7xl mx-auto px-6 flex flex-col md:flex-row justify-between items-center gap-6">
           <div className="flex items-center gap-2">
             <img 
-              src="/logo.png" 
+              src="/logopwa.png" 
               alt="RouteKing Logo" 
               className="w-8 h-8 rounded-lg object-cover"
               referrerPolicy="no-referrer"
