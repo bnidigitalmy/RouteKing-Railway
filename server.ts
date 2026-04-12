@@ -8,24 +8,16 @@ import cors from "cors";
 import admin from "firebase-admin";
 import { getFirestore } from "firebase-admin/firestore";
 import fs from "fs";
-import { initializeApp as initializeClientApp } from 'firebase/app';
-import { getFirestore as getClientFirestore, doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
 
 // Load Firebase Config
 const firebaseConfigPath = path.join(process.cwd(), 'firebase-applet-config.json');
 const firebaseConfig = JSON.parse(fs.readFileSync(firebaseConfigPath, 'utf8'));
 
 // Initialize Firebase Admin
-const firebaseApp = admin.initializeApp();
+// In AI Studio/Cloud Run, this uses the default service account
+const firebaseApp = admin.apps.length ? admin.app() : admin.initializeApp();
 
-// Initialize Firebase Client (for Firestore tasks to bypass Admin SDK permission issues)
-const clientApp = initializeClientApp(firebaseConfig);
-const clientDb = getClientFirestore(clientApp, firebaseConfig.firestoreDatabaseId);
-
-// Secret for backend writes
-const BACKEND_SECRET = process.env.BACKEND_INTERNAL_SECRET || 'RK_BACKEND_2026_SECURE_8899';
-
-// Use the specific database ID if provided, otherwise defaults to (default)
+// Use the specific database ID if provided
 const databaseId = firebaseConfig.firestoreDatabaseId || '(default)';
 console.log(`Initializing Firestore Admin with Database ID: ${databaseId}`);
 const db = getFirestore(firebaseApp, databaseId);
@@ -111,20 +103,18 @@ async function startServer() {
       formData.append('billPhone', phone || '0123456789');
 
       // Also store the full mapping in Firestore so we can recover the UID in callback
-      // Using Client SDK with secret to bypass Admin SDK permission issues
       try {
-        await setDoc(doc(clientDb, 'pending_payments', refNo), {
+        await db.collection('pending_payments').doc(refNo).set({
           uid,
           email,
           type,
           tier,
           amount,
-          createdAt: serverTimestamp(),
-          _backendSecret: BACKEND_SECRET
+          createdAt: admin.firestore.FieldValue.serverTimestamp()
         });
         console.log(`Stored pending payment in Firestore: ${refNo}`);
       } catch (fsError) {
-        console.error("Firestore Pending Payment Error (Client SDK):", fsError);
+        console.error("Firestore Pending Payment Error (Admin SDK):", fsError);
         // We continue anyway because we have query params as fallback
       }
 
@@ -176,8 +166,8 @@ async function startServer() {
         // Try to look up the full info from pending_payments if we don't have it from query
         if (!uid && refno) {
           try {
-            const pendingDoc = await getDoc(doc(clientDb, 'pending_payments', refno));
-            if (pendingDoc.exists()) {
+            const pendingDoc = await db.collection('pending_payments').doc(refno).get();
+            if (pendingDoc.exists) {
               const data = pendingDoc.data();
               uid = data?.uid;
               type = data?.type;
@@ -212,37 +202,21 @@ async function startServer() {
           expiryDate = now + (31 * 24 * 60 * 60 * 1000);
         }
 
-        // Update Firestore using Client SDK with secret
+        // Update Firestore using Admin SDK
         try {
-          await setDoc(doc(clientDb, 'profiles', uid), {
+          await db.collection('profiles').doc(uid).set({
             isPro: true,
             subscriptionTier: tier || 'lite',
             expiryDate: expiryDate,
             lastPaymentDate: now,
             lastBillCode: billcode,
             subscriptionType: type || 'monthly',
-            updatedAt: now,
-            _backendSecret: BACKEND_SECRET
+            updatedAt: now
           }, { merge: true });
           
           console.log(`Successfully updated subscription for user ${uid} (${tier} - ${type})`);
         } catch (fsUpdateError) {
-          console.error("Firestore Profile Update Error (Client SDK):", fsUpdateError);
-          // Try Admin SDK as last resort
-          try {
-            await db.collection('profiles').doc(uid).set({
-              isPro: true,
-              subscriptionTier: tier || 'lite',
-              expiryDate: expiryDate,
-              lastPaymentDate: now,
-              lastBillCode: billcode,
-              subscriptionType: type || 'monthly',
-              updatedAt: now
-            }, { merge: true });
-            console.log(`Successfully updated subscription for user ${uid} using Admin SDK`);
-          } catch (adminError) {
-            console.error("Firestore Profile Update Error (Admin SDK):", adminError);
-          }
+          console.error("Firestore Profile Update Error (Admin SDK):", fsUpdateError);
         }
       } catch (error) {
         console.error("General Callback Error:", error);
@@ -268,33 +242,18 @@ async function startServer() {
       }
 
       try {
-        await setDoc(doc(clientDb, 'profiles', uid as string), {
+        await db.collection('profiles').doc(uid as string).set({
           isPro: true,
           subscriptionTier: tier || 'lite',
           expiryDate: expiryDate,
           lastPaymentDate: now,
           lastBillCode: billcode as string,
           subscriptionType: type as string,
-          updatedAt: now,
-          _backendSecret: BACKEND_SECRET
+          updatedAt: now
         }, { merge: true });
-        console.log(`Instant activation for user ${uid} on return (Client SDK)`);
+        console.log(`Instant activation for user ${uid} on return (Admin SDK)`);
       } catch (fsError) {
-        console.error("Firestore Return Update Error (Client SDK):", fsError);
-        try {
-          await db.collection('profiles').doc(uid as string).set({
-            isPro: true,
-            subscriptionTier: tier || 'lite',
-            expiryDate: expiryDate,
-            lastPaymentDate: now,
-            lastBillCode: billcode as string,
-            subscriptionType: type as string,
-            updatedAt: now
-          }, { merge: true });
-          console.log(`Instant activation for user ${uid} on return (Admin SDK)`);
-        } catch (adminError) {
-          console.error("Firestore Return Update Error (Admin SDK):", adminError);
-        }
+        console.error("Firestore Return Update Error (Admin SDK):", fsError);
       }
       
       res.redirect('/?payment=success');

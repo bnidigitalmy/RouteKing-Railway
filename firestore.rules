@@ -80,11 +80,6 @@ service cloud.firestore {
          (request.auth.token.email == "bnidigital.my@gmail.com" && request.auth.token.email_verified == true));
     }
 
-    function isBackend() {
-      // Secret key to allow backend to bypass rules when Admin SDK fails
-      return request.resource.data.get('_backendSecret', '') == 'RK_BACKEND_2026_SECURE_8899';
-    }
-
     function isValidParcel(data) {
       return data.address is string && data.address.size() < 1000 &&
              data.trackingNumber is string && data.trackingNumber.size() < 100 &&
@@ -109,8 +104,7 @@ service cloud.firestore {
              (!('subscriptionTier' in data) || data.subscriptionTier in ['free', 'lite', 'standard', 'ultimate']) &&
              (!('trialStartedAt' in data) || data.trialStartedAt is number) &&
              (!('expiryDate' in data) || data.expiryDate is number || data.expiryDate == null) &&
-             (!('subscriptionType' in data) || data.subscriptionType is string || data.subscriptionType == null) &&
-             (!('_backendSecret' in data) || data._backendSecret is string);
+             (!('subscriptionType' in data) || data.subscriptionType is string || data.subscriptionType == null);
     }
 
     // ===============================================================
@@ -133,12 +127,19 @@ service cloud.firestore {
 
     match /profiles/{userId} {
       allow read: if isOwner(userId) || isAdmin();
-      allow create, update: if (isOwner(userId) || isAdmin() || isBackend()) && isValidProfile(request.resource.data, userId);
+      // Users can only update their basic info. isPro, role, etc. can only be set by Admin SDK or Admin user.
+      allow create: if isOwner(userId) && isValidProfile(request.resource.data, userId) && 
+                      !('isPro' in request.resource.data) && 
+                      !('role' in request.resource.data);
+      allow update: if (isOwner(userId) && isValidProfile(request.resource.data, userId) && 
+                      (!('isPro' in request.resource.data) || request.resource.data.isPro == resource.data.isPro) &&
+                      (!('role' in request.resource.data) || request.resource.data.role == resource.data.role)) || 
+                      isAdmin();
       allow delete: if isAdmin();
     }
 
     match /pending_payments/{refNo} {
-      allow read, write: if isBackend(); 
+      allow read, write: if false; // Admin SDK only
     }
 
     match /geocache/{addressHash} {
