@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { useRegisterSW } from 'virtual:pwa-register/react';
 import axios from 'axios';
 import { LandingPage } from './components/LandingPage';
 import { AdminDashboard } from './components/AdminDashboard';
@@ -47,6 +48,12 @@ const TIER_LIMITS = {
 };
 
 export default function App() {
+  const {
+    offlineReady: [offlineReady, setOfflineReady],
+    needRefresh: [needRefresh, setNeedRefresh],
+    updateServiceWorker,
+  } = useRegisterSW();
+
   const [user, setUser] = useState<User | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [parcels, setParcels] = useState<Parcel[]>([]);
@@ -2196,6 +2203,39 @@ export default function App() {
                 </p>
               </div>
             </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* PWA Update Notification */}
+      <AnimatePresence>
+        {needRefresh && (
+          <div className="fixed bottom-24 left-4 right-4 z-[9999] animate-in slide-in-from-bottom-10">
+            <div className="bg-blue-600 text-white p-4 rounded-2xl shadow-2xl flex items-center justify-between gap-4 border-2 border-blue-400">
+              <div className="flex items-center gap-3">
+                <div className="bg-white/20 p-2 rounded-xl">
+                  <RefreshCw size={20} className="animate-spin" />
+                </div>
+                <div>
+                  <p className="font-black text-sm leading-tight">Versi Baru Sedia!</p>
+                  <p className="text-[10px] font-bold opacity-80 uppercase tracking-wider">Sila kemaskini untuk prestasi terbaik.</p>
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <button 
+                  onClick={() => updateServiceWorker(true)}
+                  className="bg-white text-blue-600 px-4 py-2 rounded-xl font-black text-xs uppercase shadow-sm active:scale-95 transition-all"
+                >
+                  Update
+                </button>
+                <button 
+                  onClick={() => setNeedRefresh(false)}
+                  className="bg-blue-700 text-white p-2 rounded-xl active:scale-95 transition-all"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </AnimatePresence>

@@ -45,6 +45,16 @@
 //   - amount: number (required)
 //   - createdAt: timestamp (required)
 //
+// Collection: discounts
+// Fields:
+//   - code: string (required)
+//   - type: string (required, ['percentage', 'fixed'])
+//   - value: number (required)
+//   - usageLimit: number (optional)
+//   - usageCount: number (required)
+//   - isActive: boolean (required)
+//   - createdAt: number (required)
+//
 // Collection: geocache
 // Fields:
 //   - address: string (required)
@@ -76,8 +86,11 @@ service cloud.firestore {
 
     function isAdmin() {
       return isAuthenticated() && 
-        (get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.role == 'admin' ||
-         (request.auth.token.email == "bnidigital.my@gmail.com" && request.auth.token.email_verified == true));
+        (
+          (exists(/databases/$(database)/documents/profiles/$(request.auth.uid)) && 
+           get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.get('role', 'user') == 'admin') ||
+          (request.auth.token.get('email', '') == "bnidigital.my@gmail.com" && request.auth.token.get('email_verified', false) == true)
+        );
     }
 
     function isValidParcel(data) {
@@ -105,6 +118,15 @@ service cloud.firestore {
              (!('trialStartedAt' in data) || data.trialStartedAt is number) &&
              (!('expiryDate' in data) || data.expiryDate is number || data.expiryDate == null) &&
              (!('subscriptionType' in data) || data.subscriptionType is string || data.subscriptionType == null);
+    }
+
+    function isValidDiscount(data) {
+      return data.code is string && data.code.size() > 0 && data.code.size() < 50 &&
+             data.type in ['percentage', 'fixed'] &&
+             data.value is number &&
+             data.usageCount is number &&
+             data.isActive is bool &&
+             data.createdAt is number;
     }
 
     // ===============================================================
@@ -140,6 +162,11 @@ service cloud.firestore {
 
     match /pending_payments/{refNo} {
       allow read, write: if false; // Admin SDK only
+    }
+
+    match /discounts/{discountId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
     }
 
     match /geocache/{addressHash} {

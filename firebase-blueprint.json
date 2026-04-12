@@ -75,6 +75,21 @@
         "createdAt": { "type": "object" }
       },
       "required": ["uid", "email", "type", "tier", "amount"]
+    },
+    "discount": {
+      "title": "Discount",
+      "description": "Discount codes for subscriptions",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string" },
+        "type": { "type": "string", "enum": ["percentage", "fixed"] },
+        "value": { "type": "number" },
+        "usageLimit": { "type": "number" },
+        "usageCount": { "type": "number" },
+        "isActive": { "type": "boolean" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["code", "type", "value", "usageCount", "isActive", "createdAt"]
     }
   },
   "firestore": {
@@ -85,6 +100,10 @@
     "/pending_payments/{refNo}": {
       "schema": "pending_payment",
       "description": "Payment sessions awaiting callback"
+    },
+    "/discounts/{discountId}": {
+      "schema": "discount",
+      "description": "Discount codes"
     },
     "/parcels/{parcelId}": {
       "schema": "parcel",
