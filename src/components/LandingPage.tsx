@@ -411,6 +411,88 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onStart, isLoggingIn, 
         </div>
       </section>
 
+      {/* NEW: PWA Installation Guide (Crucial for TikTok/FB Conversion) */}
+      <section className="py-24 px-6 bg-white overflow-hidden">
+        <div className="max-w-7xl mx-auto">
+          <div className="grid lg:grid-cols-2 gap-16 items-center">
+            <div className="space-y-8">
+              <div className="inline-flex items-center gap-2 px-4 py-2 bg-green-50 text-green-700 rounded-full text-xs font-black uppercase tracking-widest">
+                <Smartphone size={14} />
+                Sangat Ringan & Cepat
+              </div>
+              <h2 className="text-4xl lg:text-5xl font-black text-gray-900 leading-tight tracking-tight">
+                Tak Perlu <span className="text-blue-600">Play Store.</span> <br />
+                Tak Makan <span className="text-red-600">Memori Phone.</span>
+              </h2>
+              <p className="text-xl text-gray-500 font-medium leading-relaxed max-w-lg">
+                RouteKing adalah aplikasi <span className="text-blue-600 font-bold">PWA</span>. Folder gambar hantaran tersusun rapi dalam app, galeri phone anda kekal bersih & phone takkan <span className="text-red-600 font-bold italic">lagging</span> lagi!
+              </p>
+              
+              <div className="space-y-6">
+                <div className="flex gap-4">
+                  <div className="w-10 h-10 rounded-full bg-blue-600 text-white flex items-center justify-center font-black shrink-0">1</div>
+                  <div>
+                    <h4 className="font-black text-gray-900">Tekan Butang Tiga Titik / Share</h4>
+                    <p className="text-gray-500 text-sm font-medium">Buka app ini dalam browser Chrome atau Safari di phone anda.</p>
+                  </div>
+                </div>
+                <div className="flex gap-4">
+                  <div className="w-10 h-10 rounded-full bg-blue-600 text-white flex items-center justify-center font-black shrink-0">2</div>
+                  <div>
+                    <h4 className="font-black text-gray-900">Pilih 'Add to Home Screen'</h4>
+                    <p className="text-gray-500 text-sm font-medium">Cari pilihan ini dalam menu browser anda.</p>
+                  </div>
+                </div>
+                <div className="flex gap-4">
+                  <div className="w-10 h-10 rounded-full bg-blue-600 text-white flex items-center justify-center font-black shrink-0">3</div>
+                  <div>
+                    <h4 className="font-black text-gray-900">Siap! Icon Raja Muncul</h4>
+                    <p className="text-gray-500 text-sm font-medium">Sekarang anda boleh buka RouteKing terus dari skrin utama macam app biasa!</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="pt-4">
+                <button 
+                  onClick={onStart}
+                  className="px-8 py-4 bg-gray-900 text-white rounded-2xl font-black text-lg hover:bg-blue-600 transition-all active:scale-95 shadow-xl shadow-gray-200"
+                >
+                  Cuba Sendiri Sekarang
+                </button>
+              </div>
+            </div>
+
+            <div className="relative">
+              <div className="absolute -inset-20 bg-blue-400/10 rounded-full blur-[100px] -z-10"></div>
+              <div className="bg-gray-100 rounded-[3rem] border-4 border-white shadow-2xl relative overflow-hidden group aspect-[4/5] lg:aspect-auto lg:h-[600px]">
+                <img 
+                  src="https://images.unsplash.com/photo-1605098293544-25f4c32344c8?q=80&w=1000&auto=format&fit=crop" 
+                  alt="App Presentation" 
+                  className="w-full h-full object-cover transform group-hover:scale-105 transition-transform duration-1000"
+                  referrerPolicy="no-referrer"
+                />
+                <div className="absolute inset-0 bg-gradient-to-t from-gray-900 via-gray-900/40 to-transparent flex flex-col justify-end p-10">
+                  <div className="text-white space-y-4">
+                    <div className="w-12 h-12 bg-white/10 backdrop-blur-md rounded-2xl flex items-center justify-center border border-white/20 mb-2">
+                      <ShieldCheck size={24} className="text-blue-400" />
+                    </div>
+                    <p className="text-2xl lg:text-3xl font-black leading-tight tracking-tight">
+                      "Dulu gallery penuh gila gambar parcel, sekarang phone dah smooth gila!"
+                    </p>
+                    <div className="flex items-center gap-2 pt-2">
+                      <span className="px-3 py-1 bg-green-500 rounded-full text-[10px] font-black uppercase tracking-widest">
+                        Terjamin Selamat
+                      </span>
+                      <span className="text-sm font-bold opacity-80 italic">100% Secure & Lightweight</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
       {/* Features Section */}
       <section className="py-24 bg-gray-50">
         <div className="max-w-7xl mx-auto px-6">

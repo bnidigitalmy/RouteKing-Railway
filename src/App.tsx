@@ -46,7 +46,11 @@ const TIER_LIMITS = {
   ultimate: { daily: 400, monthly: 10000 }
 };
 
+const MAIN_DOMAIN = 'routeking.my';
+
 export default function App() {
+  const isRootDomain = window.location.hostname === MAIN_DOMAIN || window.location.hostname === `www.${MAIN_DOMAIN}`;
+  const isAppSubdomain = window.location.hostname.startsWith('app.') || window.location.hostname === 'localhost' || window.location.hostname.includes('ais-dev');
   const [user, setUser] = useState<User | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [parcels, setParcels] = useState<Parcel[]>([]);
@@ -789,6 +793,19 @@ export default function App() {
     );
   }
 
+  // Pure Marketing Logic for Root Domain
+  if (isRootDomain) {
+    return (
+      <LandingPage 
+        onStart={() => window.location.href = `https://app.${MAIN_DOMAIN}`} 
+        isLoggingIn={false} 
+        error={null}
+        success={null}
+      />
+    );
+  }
+
+  // App Subdomain Login/Entry
   if (!user) {
     return (
       <LandingPage 
