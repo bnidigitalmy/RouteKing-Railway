@@ -4,9 +4,6 @@ import { registerSW } from 'virtual:pwa-register';
 import App from './App.tsx';
 import './index.css';
 
-// Register PWA service worker
-registerSW();
-
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <App />
