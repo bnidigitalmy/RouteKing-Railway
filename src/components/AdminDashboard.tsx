@@ -69,7 +69,7 @@ export function AdminDashboard({ onClose }: AdminDashboardProps) {
     // Listen to all profiles
     const qProfiles = query(collection(db, 'profiles'), orderBy('riderName', 'asc'));
     const unsubProfiles = onSnapshot(qProfiles, (snapshot) => {
-      const data = snapshot.docs.map(doc => doc.data() as UserProfile);
+      const data = snapshot.docs.map(doc => ({ uid: doc.id, ...doc.data() } as UserProfile));
       setProfiles(data);
       setIsLoading(false);
     }, (err) => {
@@ -91,7 +91,7 @@ export function AdminDashboard({ onClose }: AdminDashboardProps) {
     const fetchStats = async () => {
       try {
         const snapshot = await getDocs(collection(db, 'parcels'));
-        const data = snapshot.docs.map(doc => doc.data() as Parcel);
+        const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Parcel));
         setParcels(data);
       } catch (err) {
         console.error("Admin Error (Stats):", err);

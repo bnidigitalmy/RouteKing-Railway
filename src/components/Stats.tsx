@@ -2,32 +2,56 @@ import React from 'react';
 import { MapPin, Navigation, Package, TrendingUp, CheckCircle, Clock } from 'lucide-react';
 import { Parcel } from '../types';
 import { motion } from 'motion/react';
+import { cn } from '../lib/utils';
 
 interface StatsProps {
   parcels: Parcel[];
+  isGPSActive?: boolean;
 }
 
-export function Stats({ parcels }: StatsProps) {
+export function Stats({ parcels, isGPSActive = false }: StatsProps) {
   const total = parcels.length;
   const delivered = parcels.filter(p => p.status === 'delivered').length;
   const progress = total > 0 ? (delivered / total) * 100 : 0;
 
   return (
-    <div className="grid grid-cols-2 gap-3">
-      <motion.div 
-        initial={{ opacity: 0, scale: 0.9 }}
-        animate={{ opacity: 1, scale: 1 }}
-        className="bg-white p-4 rounded-3xl shadow-sm border border-gray-100"
-      >
-        <div className="flex items-center gap-2 text-blue-600 mb-2">
-          <Package size={18} />
-          <span className="text-[10px] font-black uppercase tracking-widest">Jumlah</span>
-        </div>
-        <div className="flex items-baseline gap-1">
-          <span className="text-3xl font-black text-gray-900 tracking-tighter">{total}</span>
-          <span className="text-xs text-gray-400 font-bold uppercase">Parcel</span>
-        </div>
-      </motion.div>
+    <div className="flex flex-col gap-3">
+      {/* Small GPS Status Row */}
+      <div className="flex justify-end">
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.9 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className={cn(
+            "flex items-center gap-1.5 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-wider border",
+            isGPSActive 
+              ? "bg-green-50 text-green-700 border-green-100 shadow-sm" 
+              : "bg-orange-50 text-orange-700 border-orange-100 animate-pulse"
+          )}
+        >
+          <div className={cn(
+            "w-2 h-2 rounded-full",
+            isGPSActive ? "bg-green-500 shadow-[0_0_5px_rgba(34,197,94,0.5)]" : "bg-orange-400"
+          )} />
+          <MapPin size={10} />
+          {isGPSActive ? "Lokasi Aktif" : "Menunggu GPS..."}
+        </motion.div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.9 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="bg-white p-4 rounded-3xl shadow-sm border border-gray-100"
+        >
+          <div className="flex items-center gap-2 text-blue-600 mb-2">
+            <Package size={18} />
+            <span className="text-[10px] font-black uppercase tracking-widest">Jumlah</span>
+          </div>
+          <div className="flex items-baseline gap-1">
+            <span className="text-3xl font-black text-gray-900 tracking-tighter">{total}</span>
+            <span className="text-xs text-gray-400 font-bold uppercase">Parcel</span>
+          </div>
+        </motion.div>
 
       <motion.div 
         initial={{ opacity: 0, scale: 0.9 }}
@@ -73,5 +97,6 @@ export function Stats({ parcels }: StatsProps) {
         </div>
       </motion.div>
     </div>
+  </div>
   );
 }

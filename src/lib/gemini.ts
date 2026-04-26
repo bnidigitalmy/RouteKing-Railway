@@ -104,17 +104,29 @@ export async function extractParcelInfo(base64Image: string) {
   }, { maxRetries: 2, initialDelay: 2000 });
 }
 
+// Local memory cache to save Firestore reads in current session
+const localGeocache = new Map<string, { lat: number, lng: number }>();
+
 // Real geocoding using Google Maps Geocoding API with Firestore Caching
 export async function getCoordinates(address: string) {
   const addressHash = hashAddress(address);
+  
+  // 0. Check Local Memory Cache first
+  if (localGeocache.has(addressHash)) {
+    console.log("Using local memory cached coordinates for:", address);
+    return localGeocache.get(addressHash)!;
+  }
   
   // 1. Check Firestore Cache first
   try {
     const cacheDoc = await getDoc(doc(db, 'geocache', addressHash));
     if (cacheDoc.exists()) {
-      console.log("Using cached coordinates for:", address);
+      console.log("Using Firestore cached coordinates for:", address);
       const data = cacheDoc.data();
-      return { lat: data.lat, lng: data.lng };
+      const result = { lat: data.lat, lng: data.lng };
+      // Save to local cache for next time in same session
+      localGeocache.set(addressHash, result);
+      return result;
     }
   } catch (e) {
     console.warn("Geocache read failed:", e);
@@ -213,9 +225,10 @@ export async function getCoordinates(address: string) {
     };
   }
 
-  // 2. Save to Firestore Cache for next time
+  // 2. Save to Firestore Cache and local cache for next time
   if (result) {
     try {
+      localGeocache.set(addressHash, result);
       await setDoc(doc(db, 'geocache', addressHash), {
         address,
         lat: result.lat,

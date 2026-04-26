@@ -3,13 +3,11 @@ import { motion } from 'motion/react';
 import { X, Shield, Lock, Eye, FileText } from 'lucide-react';
 
 interface LegalModalProps {
-  isOpen: boolean;
   onClose: () => void;
   type: 'privacy' | 'terms';
 }
 
-export const LegalModal: React.FC<LegalModalProps> = ({ isOpen, onClose, type }) => {
-  if (!isOpen) return null;
+export const LegalModal: React.FC<LegalModalProps> = ({ onClose, type }) => {
 
   const content = {
     privacy: {

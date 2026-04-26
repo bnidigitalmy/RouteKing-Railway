@@ -1,19 +1,25 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, Suspense, lazy } from 'react';
 import axios from 'axios';
-import { LandingPage } from './components/LandingPage';
-import { AdminDashboard } from './components/AdminDashboard';
-import { Plus, MapPin, Navigation, Trash2, RefreshCw, Package, ArrowRight, Camera, Search, LayoutGrid, List, Map, Filter, Folder, MoreVertical, LogOut, LogIn, AlertCircle, X, Edit2, User as UserIcon, CheckCircle2, Copy, Share2, ChevronDown, ChevronRight, ShieldCheck, Truck, Settings, Banknote, HelpCircle } from 'lucide-react';
+// Code splitting for large components
+const LandingPage = lazy(() => import('./components/LandingPage').then(m => ({ default: m.LandingPage })));
+const AdminDashboard = lazy(() => import('./components/AdminDashboard').then(m => ({ default: m.AdminDashboard })));
+const Scanner = lazy(() => import('./components/Scanner').then(m => ({ default: m.Scanner })));
+const UserGuide = lazy(() => import('./components/UserGuide').then(m => ({ default: m.UserGuide })));
+const LegalModal = lazy(() => import('./components/LegalModal').then(m => ({ default: m.LegalModal })));
+
+import { Plus, MapPin, Navigation, Trash2, RefreshCw, Package, ArrowRight, Camera, Search, LayoutGrid, List, Map as MapIcon, Filter, Folder, MoreVertical, LogOut, LogIn, AlertCircle, X, Edit2, User as UserIcon, CheckCircle2, Copy, Share2, ChevronDown, ChevronRight, ShieldCheck, Truck, Settings, Banknote, HelpCircle, Mail, Zap } from 'lucide-react';
 import { Parcel, UserProfile } from './types';
-import { Scanner } from './components/Scanner';
-import { LegalModal } from './components/LegalModal';
 import { ParcelCard } from './components/ParcelCard';
 import { Stats } from './components/Stats';
 import { MapPreview } from './components/MapPreview';
 import { NavigationMode } from './components/NavigationMode';
-import { UserGuide } from './components/UserGuide';
+import { FailedDeliveryModal } from './components/FailedDeliveryModal';
+import { CODSummaryModal } from './components/CODSummaryModal';
+import { HoldButton } from './components/ui/HoldButton';
+import { ParcelSkeleton } from './components/ui/Skeleton';
 import { optimizeRoute } from './lib/optimizer';
 import { getCoordinates } from './lib/gemini';
-import { cn } from './lib/utils';
+import { cn, hapticFeedback } from './lib/utils';
 import confetti from 'canvas-confetti';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -51,6 +57,8 @@ const MAIN_DOMAIN = 'routeking.my';
 export default function App() {
   const isRootDomain = window.location.hostname === MAIN_DOMAIN || window.location.hostname === `www.${MAIN_DOMAIN}`;
   const isAppSubdomain = window.location.hostname.startsWith('app.') || window.location.hostname === 'localhost' || window.location.hostname.includes('ais-dev');
+  const isMarketingMode = isRootDomain && !isAppSubdomain;
+  
   const [user, setUser] = useState<User | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [parcels, setParcels] = useState<Parcel[]>([]);
@@ -65,12 +73,12 @@ export default function App() {
   // Search & Filter States
   const [searchQuery, setSearchQuery] = useState('');
   const [showFilters, setShowFilters] = useState(false);
-  const [filterStatus, setFilterStatus] = useState<'all' | 'pending' | 'delivered'>('pending');
+  const [filterStatus, setFilterStatus] = useState<'all' | 'pending' | 'delivered' | 'failed' | 'retry' | 'return'>('pending');
   const [filterCOD, setFilterCOD] = useState<boolean>(false);
   const [filterGroup, setFilterGroup] = useState<string>('all');
 
   // Folder States
-  const [folders, setFolders] = useState<string[]>([]);
+  const [folders, setFolders] = useState<{id: string, name: string}[]>([]);
   const [parcelOptionsId, setParcelOptionsId] = useState<string | null>(null);
   
   // Modal States
@@ -84,6 +92,9 @@ export default function App() {
   const [isClearDeliveredModalOpen, setIsClearDeliveredModalOpen] = useState(false);
   const [isMarkingModeOpen, setIsMarkingModeOpen] = useState(false);
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
+  const [isFailedDeliveryModalOpen, setIsFailedDeliveryModalOpen] = useState(false);
+  const [isCODSummaryOpen, setIsCODSummaryOpen] = useState(false);
+  const [parcelForFailure, setParcelForFailure] = useState<Parcel | null>(null);
   const [collapsedFolders, setCollapsedFolders] = useState<Record<string, boolean>>({});
   const [isQuickFindOpen, setIsQuickFindOpen] = useState(false);
   const [quickFindQuery, setQuickFindQuery] = useState('');
@@ -98,9 +109,11 @@ export default function App() {
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [showPWAHint, setShowPWAHint] = useState(false);
+  const [isLoadingData, setIsLoadingData] = useState(true);
   const [isAdminDashboardOpen, setIsAdminDashboardOpen] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [hasAutoOpenedGuide, setHasAutoOpenedGuide] = useState(false);
   const [riderName, setRiderName] = useState('');
   const [courierCompany, setCourierCompany] = useState('Shopee Express (SPX)');
   const [ratePerParcel, setRatePerParcel] = useState('');
@@ -147,16 +160,32 @@ export default function App() {
       window.history.replaceState({}, document.title, "/");
     }
 
-    // Get current location on mount
+    // Track continuous location
+    let watchId: number | null = null;
     if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => setStartPoint({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
-        () => console.log("Using default hub location"),
-        { timeout: 5000 }
+      watchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          const newLoc = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+          setStartPoint(prev => {
+            // Only update if movement is significant (approx 5-10 meters) to prevent excessive re-renders
+            const dist = Math.sqrt(Math.pow(prev.lat - newLoc.lat, 2) + Math.pow(prev.lng - newLoc.lng, 2));
+            if (dist > 0.0001) return newLoc;
+            return prev;
+          });
+        },
+        (err) => console.warn("Geolocation watch error:", err.message),
+        { 
+          enableHighAccuracy: true, 
+          timeout: 10000, 
+          maximumAge: 10000 
+        }
       );
     }
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribe();
+      if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+    };
   }, []);
 
   // Firestore Listeners
@@ -176,7 +205,18 @@ export default function App() {
     );
     const unsubParcels = onSnapshot(qParcels, (snapshot) => {
       const parcelData = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Parcel));
-      setParcels(parcelData);
+      
+      // Efficient unique filtering using a Map
+      const uniqueMap = new Map<string, Parcel>();
+      parcelData.forEach(p => {
+        if (!uniqueMap.has(p.id)) {
+          uniqueMap.set(p.id, p);
+        }
+      });
+      const uniqueParcels = Array.from(uniqueMap.values());
+      
+      setParcels(uniqueParcels);
+      setIsLoadingData(false);
     }, (error) => {
       console.error("Firestore Error (Parcels):", error);
     });
@@ -188,8 +228,21 @@ export default function App() {
       orderBy('createdAt', 'asc')
     );
     const unsubFolders = onSnapshot(qFolders, (snapshot) => {
-      const folderData = snapshot.docs.map(doc => doc.data().name as string);
-      setFolders(folderData);
+      const folderData = snapshot.docs.map(doc => ({ 
+        id: doc.id, 
+        name: doc.data().name as string 
+      }));
+      
+      // Efficient unique filtering
+      const folderMap = new Map<string, { id: string; name: string }>();
+      folderData.forEach(f => {
+        if (!folderMap.has(f.id)) {
+          folderMap.set(f.id, f);
+        }
+      });
+      const uniqueFolders = Array.from(folderMap.values());
+      
+      setFolders(uniqueFolders);
     }, (error) => {
       console.error("Firestore Error (Folders):", error);
     });
@@ -230,6 +283,12 @@ export default function App() {
         } else if (subscriptionActive) {
           setIsSubscriptionModalOpen(false);
           setPaymentFailed(false);
+        }
+
+        // Auto-open User Guide for first-time users
+        if (!data.hasSeenOnboarding && !hasAutoOpenedGuide && !isProfileModalOpen) {
+          setIsUserGuideOpen(true);
+          setHasAutoOpenedGuide(true);
         }
       } else {
         // New user - prompt for profile setup
@@ -360,6 +419,7 @@ export default function App() {
       setError(null);
       
       // Success feedback
+      hapticFeedback('success');
       confetti({
         particleCount: 100,
         spread: 70,
@@ -410,6 +470,7 @@ export default function App() {
         codAmount: editingParcel.codAmount,
         groupTag: editingParcel.groupTag
       });
+      hapticFeedback('light');
       setIsEditParcelModalOpen(false);
       setEditingParcel(null);
     } catch (e) {
@@ -426,11 +487,38 @@ export default function App() {
       const updateData: any = {
         status: 'delivered',
         deliveredAt: Date.now(),
+        failedAt: null,
+        failedReason: null,
+        failedPhotoUrl: null
       };
       if (podPhotoUrl) {
         updateData.podPhotoUrl = podPhotoUrl;
       }
+      hapticFeedback('success');
       await updateDoc(parcelRef, updateData);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `parcels/${id}`);
+    }
+  }, [user]);
+
+  const markFailed = useCallback(async (id: string, reason: string, status: 'failed' | 'retry' | 'return', failedPhotoUrl?: string) => {
+    if (!user) return;
+    try {
+      const parcelRef = doc(db, 'parcels', id);
+      const updateData: any = {
+        status,
+        failedAt: Date.now(),
+        failedReason: reason,
+        deliveredAt: null,
+        podPhotoUrl: null
+      };
+      if (failedPhotoUrl) {
+        updateData.failedPhotoUrl = failedPhotoUrl;
+      }
+      hapticFeedback('medium');
+      await updateDoc(parcelRef, updateData);
+      setIsFailedDeliveryModalOpen(false);
+      setParcelForFailure(null);
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `parcels/${id}`);
     }
@@ -439,19 +527,34 @@ export default function App() {
   const [selectedPODParcel, setSelectedPODParcel] = useState<Parcel | null>(null);
 
   const onStatusChange = useCallback((id: string, status: Parcel['status']) => {
+    const p = parcels.find(parcel => parcel.id === id);
+    if (!p) return;
+
+    if (status === 'failed') {
+      setParcelForFailure(p);
+      setIsFailedDeliveryModalOpen(true);
+      return;
+    }
+
     const performUpdate = async () => {
       try {
         if (status === 'delivered') {
           await markDelivered(id);
         } else {
-          await updateDoc(doc(db, 'parcels', id), { status, deliveredAt: null });
+          await updateDoc(doc(db, 'parcels', id), { 
+            status, 
+            deliveredAt: null,
+            failedAt: null,
+            failedReason: null,
+            failedPhotoUrl: null
+          });
         }
       } catch (error) {
         handleFirestoreError(error, OperationType.UPDATE, `parcels/${id}`);
       }
     };
     performUpdate();
-  }, [markDelivered]);
+  }, [markDelivered, parcels]);
 
   const onMoveClick = useCallback((id: string) => {
     setParcelOptionsId(id);
@@ -587,6 +690,7 @@ export default function App() {
     try {
       const profileData: any = {
         uid: user.uid,
+        email: user.email || '',
         riderName: riderName.trim(),
         courierCompany: courierCompany.trim(),
         ratePerParcel: parseFloat(ratePerParcel) || 0
@@ -703,7 +807,7 @@ export default function App() {
     if (!user) return;
     if (newFolderName && newFolderName.trim() !== '') {
       const trimmedName = newFolderName.trim();
-      if (!folders.includes(trimmedName)) {
+      if (!folders.find(f => f.name === trimmedName)) {
         const folderId = crypto.randomUUID();
         try {
           await setDoc(doc(db, 'folders', folderId), {
@@ -782,40 +886,119 @@ export default function App() {
     ).slice(0, 3);
   }, [parcels, quickFindQuery]);
 
+  // Memoize folders and their sort order to prevent flickering/re-sorting on every render
+  const sortedFolders = React.useMemo(() => {
+    const uniqueFoldersByName = folders.filter((f, i, self) => 
+      f.name !== 'Tiada Folder' && i === self.findIndex(t => t.name === f.name)
+    );
+    const allFolders = [{ id: 'system-default-folder', name: 'Tiada Folder' }, ...uniqueFoldersByName];
+    
+    // Create a copy to sort
+    return [...allFolders].sort((a, b) => {
+      // Get pending parcels for both folders (from the unfiltered pool for stability)
+      const aParcels = parcels.filter(p => (p.folder || 'Tiada Folder') === a.name && p.status !== 'delivered');
+      const bParcels = parcels.filter(p => (p.folder || 'Tiada Folder') === b.name && p.status !== 'delivered');
+      
+      if (aParcels.length === 0) return 1;
+      if (bParcels.length === 0) return -1;
+
+      // Find closest parcel in each folder to startPoint
+      const aDist = Math.min(...aParcels.map(p => 
+        Math.sqrt(Math.pow((p.lat || 0) - startPoint.lat, 2) + Math.pow((p.lng || 0) - startPoint.lng, 2))
+      ));
+      const bDist = Math.min(...bParcels.map(p => 
+        Math.sqrt(Math.pow((p.lat || 0) - startPoint.lat, 2) + Math.pow((p.lng || 0) - startPoint.lng, 2))
+      ));
+
+      return aDist - bDist;
+    });
+  }, [folders, parcels, startPoint]); // Stable dependency on parcels, not filteredParcels
+
+  const LoadingFallback = () => (
+    <div className="flex flex-col items-center justify-center p-12 space-y-4">
+      <RefreshCw className="text-blue-600 animate-spin" size={32} />
+      <p className="text-xs font-bold text-gray-400 uppercase tracking-widest animate-pulse">Memuatkan...</p>
+    </div>
+  );
+
   if (isAuthLoading) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
-        <div className="flex flex-col items-center gap-4">
-          <RefreshCw className="animate-spin text-blue-600" size={40} />
-          <p className="text-gray-500 font-bold animate-pulse">Memuatkan RouteKing...</p>
+      <div className="min-h-screen bg-white flex items-center justify-center p-6">
+        <div className="flex flex-col items-center space-y-6 animate-in fade-in duration-700">
+          <div className="relative">
+            <div className="w-24 h-24 bg-blue-600 rounded-[2.5rem] flex items-center justify-center shadow-2xl shadow-blue-200">
+              <Truck className="text-white animate-bounce" size={48} />
+            </div>
+            <div className="absolute -bottom-2 -right-2 w-10 h-10 bg-orange-500 rounded-2xl flex items-center justify-center border-4 border-white shadow-lg">
+              <RefreshCw className="text-white animate-spin" size={16} />
+            </div>
+          </div>
+          <div className="space-y-3 text-center">
+            <h2 className="text-2xl font-black text-gray-900 tracking-tight">RouteKing</h2>
+            <div className="flex flex-col items-center gap-1">
+              <p className="text-xs font-bold text-gray-400 uppercase tracking-[0.2em]">Sila Tunggu Sebentar</p>
+              <div className="flex justify-center space-x-1 mt-2">
+                <div className="w-1.5 h-1.5 bg-blue-600 rounded-full animate-bounce [animation-delay:-0.3s]"></div>
+                <div className="w-1.5 h-1.5 bg-blue-600 rounded-full animate-bounce [animation-delay:-0.15s]"></div>
+                <div className="w-1.5 h-1.5 bg-blue-600 rounded-full animate-bounce"></div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     );
   }
 
   // Pure Marketing Logic for Root Domain
-  if (isRootDomain) {
+  if (isMarketingMode) {
     return (
-      <LandingPage 
-        onStart={() => window.location.href = `https://app.${MAIN_DOMAIN}`} 
-        isLoggingIn={false} 
-        error={null}
-        success={null}
-      />
+      <Suspense fallback={<div className="min-h-screen bg-white" />}>
+        <LandingPage 
+          onStart={() => window.location.href = `https://app.${MAIN_DOMAIN}`} 
+          isLoggingIn={false} 
+          error={null}
+          success={null}
+          showMarketing={true}
+        />
+      </Suspense>
+    );
+  }
+
+  // Handle domains and subdomains
+  const hostname = window.location.hostname;
+  const isAppDomain = isAppSubdomain || hostname.includes('.run.app');
+
+  // If we are NOT on the app domain, only show the Landing page with a redirect button
+  if (!isAppDomain && hostname !== 'localhost') {
+    return (
+      <Suspense fallback={<div className="min-h-screen bg-white" />}>
+        <LandingPage 
+          onStart={() => window.location.href = `https://app.${hostname}`}
+          isLoggingIn={false}
+          error={null}
+          onClearError={() => {}}
+          success={null}
+          onClearSuccess={() => {}}
+          showMarketing={true}
+        />
+      </Suspense>
     );
   }
 
   // App Subdomain Login/Entry
   if (!user) {
     return (
-      <LandingPage 
-        onStart={handleSignIn} 
-        isLoggingIn={isSigningIn} 
-        error={error}
-        onClearError={() => setError(null)}
-        success={paymentSuccess ? "Akaun anda telah berjaya dinaiktaraf!" : null}
-        onClearSuccess={() => setPaymentSuccess(false)}
-      />
+      <Suspense fallback={<div className="min-h-screen bg-white" />}>
+        <LandingPage 
+          onStart={handleSignIn} 
+          isLoggingIn={isSigningIn} 
+          error={error}
+          onClearError={() => setError(null)}
+          success={paymentSuccess ? "Akaun anda telah berjaya dinaiktaraf!" : null}
+          onClearSuccess={() => setPaymentSuccess(false)}
+          showMarketing={false} // Only show login UI on app subdomain
+        />
+      </Suspense>
     );
   }
 
@@ -823,9 +1006,15 @@ export default function App() {
     p.status === 'delivered' && 
     p.deliveredAt && 
     new Date(p.deliveredAt).toDateString() === new Date().toDateString()
-  ).length;
+  );
+  
+  const countDeliveredToday = deliveredToday.length;
 
-  const earningsToday = deliveredToday * (profile?.ratePerParcel || 0);
+  const codCollectedToday = deliveredToday
+    .filter(p => p.isCOD && p.codAmount)
+    .reduce((sum, p) => sum + (p.codAmount || 0), 0);
+
+  const earningsToday = countDeliveredToday * (profile?.ratePerParcel || 0);
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col pb-24">
@@ -890,16 +1079,20 @@ export default function App() {
                 <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest leading-none mb-1">Gaji Hari Ini</p>
                 <h2 className="text-2xl font-black text-gray-900 leading-none">RM {earningsToday.toFixed(2)}</h2>
                 <p className="text-[10px] font-bold text-green-600 mt-1">
-                  {deliveredToday} Parcel Selesai
+                  {countDeliveredToday} Parcel Selesai
                 </p>
               </div>
             </div>
-            <div className="text-right">
-              <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest leading-none mb-1">Baki Parcel</p>
-              <h2 className="text-xl font-black text-blue-600 leading-none">
-                {parcels.filter(p => p.status === 'pending').length}
+            <button 
+              onClick={() => setIsCODSummaryOpen(true)}
+              className="text-right hover:bg-gray-50 p-2 rounded-2xl transition-all active:scale-95 border border-transparent hover:border-gray-100"
+            >
+              <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest leading-none mb-1">COD Terkumpul</p>
+              <h2 className="text-xl font-black text-orange-600 leading-none">
+                RM {codCollectedToday.toFixed(2)}
               </h2>
-            </div>
+              <p className="text-[9px] font-bold text-blue-500 mt-1 uppercase tracking-tighter">Lihat Butiran</p>
+            </button>
           </div>
         </div>
       </header>
@@ -918,7 +1111,10 @@ export default function App() {
           </div>
         )}
 
-        <Stats parcels={parcels} />
+        <Stats 
+          parcels={parcels} 
+          isGPSActive={startPoint.lat !== 3.1390 || startPoint.lng !== 101.6869} 
+        />
 
             {/* Search & Actions */}
             <div className="space-y-3">
@@ -951,19 +1147,23 @@ export default function App() {
             <div className="bg-white p-4 rounded-2xl border-2 border-gray-100 shadow-sm space-y-4 animate-in slide-in-from-top-2">
               <div className="space-y-2">
                 <label className="text-xs font-bold text-gray-500 uppercase">Status Parcel</label>
-                <div className="flex gap-2">
-                  {(['all', 'pending', 'delivered'] as const).map((status) => (
+                <div className="flex flex-wrap gap-2">
+                  {(['all', 'pending', 'delivered', 'failed', 'retry', 'return'] as const).map((status) => (
                     <button
                       key={status}
                       onClick={() => setFilterStatus(status)}
                       className={cn(
-                        "flex-1 py-2 px-3 rounded-lg text-xs font-bold transition-all",
+                        "flex-1 min-w-[80px] py-2 px-3 rounded-lg text-[10px] font-bold transition-all uppercase tracking-wider",
                         filterStatus === status 
-                          ? "bg-blue-600 text-white shadow-md" 
-                          : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                          ? "bg-blue-600 text-white shadow-md scale-105" 
+                          : "bg-gray-100 text-gray-500 hover:bg-gray-200"
                       )}
                     >
-                      {status === 'all' ? 'Semua' : status === 'pending' ? 'Belum Hantar' : 'Selesai'}
+                      {status === 'all' ? 'Semua' : 
+                       status === 'pending' ? 'Hantar' : 
+                       status === 'delivered' ? 'Selesai' :
+                       status === 'failed' ? 'Gagal' :
+                       status === 'retry' ? 'Retry' : 'Return'}
                     </button>
                   ))}
                 </div>
@@ -1005,7 +1205,7 @@ export default function App() {
                     className="w-full bg-gray-50 border-2 border-gray-100 rounded-lg py-2 px-3 text-sm font-bold text-gray-700 focus:border-blue-500 outline-none"
                   >
                     <option value="all">Semua Kawasan</option>
-                    {uniqueGroups.map(group => (
+                    {uniqueGroups.filter(g => g !== 'all').map(group => (
                       <option key={group} value={group}>{group}</option>
                     ))}
                   </select>
@@ -1016,28 +1216,20 @@ export default function App() {
 
           <div className="flex flex-col gap-2">
             <div className="flex gap-2">
-              <button
-                onClick={() => handleOptimize()}
-                disabled={isOptimizing || parcels.length === 0}
+              <HoldButton
+                onConfirm={() => handleOptimize()}
+                holdTime={1500}
+                colorClass="bg-blue-600"
                 className={cn(
-                  "flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-2xl font-bold text-sm transition-all shadow-md active:scale-95",
+                  "flex-1 py-3 px-4 rounded-2xl font-bold text-sm shadow-md active:scale-95",
                   isOptimizing 
-                    ? "bg-gray-100 text-gray-400 cursor-not-allowed" 
-                    : "bg-blue-600 text-white hover:bg-blue-700"
+                    ? "bg-gray-100 text-gray-400 cursor-not-allowed pointer-events-none" 
+                    : "bg-blue-600 text-white"
                 )}
+                icon={isOptimizing ? <RefreshCw size={18} className="animate-spin" /> : <Navigation size={18} />}
               >
-                {isOptimizing ? (
-                  <>
-                    <RefreshCw size={18} className="animate-spin" />
-                    Menyusun...
-                  </>
-                ) : (
-                  <>
-                    <Navigation size={18} />
-                    Susun Laluan
-                  </>
-                )}
-              </button>
+                {isOptimizing ? 'Menyusun...' : 'Susun Laluan'}
+              </HoldButton>
               
               <button
                 onClick={() => {
@@ -1049,7 +1241,7 @@ export default function App() {
                 title="Tukar Paparan"
               >
                 {viewMode === 'list' && <LayoutGrid size={20} />}
-                {viewMode === 'grid' && <Map size={20} />}
+                {viewMode === 'grid' && <MapIcon size={20} />}
                 {viewMode === 'map' && <List size={20} />}
               </button>
 
@@ -1135,99 +1327,124 @@ export default function App() {
               </button>
             </div>
 
-            {['Tiada Folder', ...folders].map(folder => {
-              const folderParcels = filteredParcels
-                .filter(p => (p.folder || 'Tiada Folder') === folder)
-                .sort((a, b) => a.sequenceNumber - b.sequenceNumber);
-              
-              if (folder === 'Tiada Folder' && folderParcels.length === 0 && folders.length > 0) return null;
-
-              const isCollapsed = collapsedFolders[folder] || false;
-
-              return (
-                <div 
-                  key={folder}
-                  onDragOver={(e) => e.preventDefault()}
-                  onDrop={async (e) => {
-                    e.preventDefault();
-                    const parcelId = e.dataTransfer.getData('text/plain');
-                    if (parcelId) {
-                      try {
-                        await updateDoc(doc(db, 'parcels', parcelId), { 
-                          folder: folder === 'Tiada Folder' ? null : folder 
-                        });
-                      } catch (err) {
-                        console.error("Error moving parcel:", err);
-                      }
-                    }
-                  }}
-                  className={cn(
-                    "rounded-2xl p-3 border-2 transition-colors",
-                    folder === 'Tiada Folder' ? "bg-transparent border-transparent p-0" : "bg-gray-100/50 border-dashed border-gray-200"
-                  )}
-                >
-                  <div className={cn("flex items-center justify-between mb-3 px-2", folder === 'Tiada Folder' && folderParcels.length === 0 && "hidden")}>
-                    <button 
-                      onClick={() => setCollapsedFolders(prev => ({ ...prev, [folder]: !isCollapsed }))}
-                      className="flex items-center gap-2 hover:opacity-70 transition-opacity"
-                    >
-                      {isCollapsed ? <ChevronRight size={18} className="text-gray-400" /> : <ChevronDown size={18} className="text-gray-400" />}
-                      <h3 className="font-bold text-gray-700 flex items-center gap-2">
-                        {folder === 'Tiada Folder' ? <Package size={18} className="text-gray-400" /> : <Folder size={18} className="text-blue-500" />}
-                        {folder}
-                        <span className="bg-gray-200 text-gray-600 text-xs py-0.5 px-2 rounded-full">{folderParcels.length}</span>
-                      </h3>
-                    </button>
-                    <div className="flex items-center gap-2">
-                      <button 
-                        onClick={() => handleStartNavigation(folder)} 
-                        disabled={folderParcels.filter(p => p.status !== 'delivered').length === 0}
-                        className="flex items-center gap-1 text-xs font-bold text-green-600 bg-green-50 hover:bg-green-100 px-2 py-1.5 rounded-lg transition-colors disabled:opacity-50"
-                      >
-                        <Navigation size={14} />
-                        Mula
-                      </button>
-                      <button 
-                        onClick={() => handleOptimize(folder)} 
-                        disabled={isOptimizing || folderParcels.filter(p => p.status !== 'delivered').length === 0}
-                        className="flex items-center gap-1 text-xs font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 px-2 py-1.5 rounded-lg transition-colors disabled:opacity-50"
-                      >
-                        <RefreshCw size={14} className={isOptimizing ? "animate-spin" : ""} />
-                        Susun
-                      </button>
-                      {folder !== 'Tiada Folder' && (
-                        <button onClick={() => confirmDeleteFolder(folder)} className="text-red-400 hover:text-red-600 p-1 ml-1">
-                          <Trash2 size={16} />
-                        </button>
-                      )}
-                    </div>
+            {(() => {
+              // If we have a user but data is still loading, show skeletons
+              if (user && isLoadingData && !isMarketingMode) {
+                return (
+                  <div className={cn(
+                    "grid gap-3",
+                    viewMode === 'grid' ? "grid-cols-2" : "grid-cols-1"
+                  )}>
+                    {[1, 2, 3, 4, 5, 6].map(i => <ParcelSkeleton key={i} />)}
                   </div>
-                  
-                  {!isCollapsed && (
-                    <div className={cn(
-                      "grid gap-3 animate-in fade-in slide-in-from-top-1 duration-200",
-                      viewMode === 'grid' ? "grid-cols-2" : "grid-cols-1"
-                    )}>
-                      {folderParcels.map(parcel => (
-                        <ParcelCard 
-                          key={parcel.id} 
-                          parcel={parcel} 
-                          profile={profile}
-                          onStatusChange={onStatusChange}
-                          onMoveClick={() => onMoveClick(parcel.id)}
-                          onViewPOD={onViewPOD}
-                        />
-                      ))}
-                      {folderParcels.length === 0 && folder !== 'Tiada Folder' && (
-                        <div className="col-span-full text-center py-6 text-gray-400 text-sm font-medium border-2 border-dashed border-gray-200 rounded-xl">
-                          Tarik parcel ke sini atau guna menu 3-titik
-                        </div>
-                      )}
+                );
+              }
+              
+              return sortedFolders.map((folder, folderIdx) => {
+                const folderParcels = filteredParcels
+                  .filter(p => (p.folder || 'Tiada Folder') === folder.name)
+                  .sort((a, b) => a.sequenceNumber - b.sequenceNumber);
+                
+                if (folder.name === 'Tiada Folder' && folderParcels.length === 0 && folders.some(f => f.name !== 'Tiada Folder')) return null;
+
+                const isCollapsed = collapsedFolders[folder.name] || false;
+
+                return (
+                  <div 
+                    key={`folder-wrapper-${folder.id}`}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={async (e) => {
+                      e.preventDefault();
+                      const parcelId = e.dataTransfer.getData('text/plain');
+                      if (parcelId) {
+                        try {
+                          await updateDoc(doc(db, 'parcels', parcelId), { 
+                            folder: folder.name === 'Tiada Folder' ? null : folder.name 
+                          });
+                        } catch (err) {
+                          console.error("Error moving parcel:", err);
+                        }
+                      }
+                    }}
+                    className={cn(
+                      "rounded-2xl p-3 border-2 transition-colors",
+                      folder.name === 'Tiada Folder' ? "bg-transparent border-transparent p-0" : "bg-gray-100/50 border-dashed border-gray-200"
+                    )}
+                  >
+                    <div className={cn("flex items-center justify-between mb-3 px-2", folder.name === 'Tiada Folder' && folderParcels.length === 0 && "hidden")}>
+                      <button 
+                        onClick={() => setCollapsedFolders(prev => ({ ...prev, [folder.name]: !isCollapsed }))}
+                        className="flex items-center gap-2 hover:opacity-70 transition-opacity"
+                      >
+                        {isCollapsed ? <ChevronRight size={18} className="text-gray-400" /> : <ChevronDown size={18} className="text-gray-400" />}
+                        <h3 className="font-bold text-gray-700 flex items-center gap-2">
+                          {folder.name === 'Tiada Folder' ? <Package size={18} className="text-gray-400" /> : <Folder size={18} className="text-blue-500" />}
+                          {folder.name}
+                          <span className="bg-gray-200 text-gray-600 text-xs py-0.5 px-2 rounded-full">{folderParcels.length}</span>
+                          {folderIdx === 0 && sortedFolders.length > 1 && folderParcels.filter(p => p.status !== 'delivered').length > 0 && (
+                            <span className="bg-green-100 text-green-700 text-[10px] px-2 py-0.5 rounded-full font-bold flex items-center gap-1 animate-pulse">
+                              <Zap size={10} fill="currentColor" /> Terdekat
+                            </span>
+                          )}
+                        </h3>
+                      </button>
+                      <div className="flex items-center gap-2">
+                        <button 
+                          onClick={() => handleStartNavigation(folder.name)} 
+                          disabled={folderParcels.filter(p => p.status !== 'delivered').length === 0}
+                          className="flex items-center gap-1 text-xs font-bold text-green-600 bg-green-50 hover:bg-green-100 px-2 py-1.5 rounded-lg transition-colors disabled:opacity-50"
+                        >
+                          <Navigation size={14} />
+                          Mula
+                        </button>
+                        <HoldButton 
+                          onConfirm={() => handleOptimize(folder.name)} 
+                          holdTime={1000}
+                          colorClass="bg-blue-600"
+                          className={cn(
+                            "flex items-center gap-1 text-[10px] font-black px-2 py-1.5 rounded-lg border",
+                            isOptimizing || folderParcels.filter(p => p.status !== 'delivered').length === 0
+                              ? "bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed pointer-events-none"
+                              : "text-blue-600 bg-blue-50 border-blue-100"
+                          )}
+                          icon={<RefreshCw size={12} className={isOptimizing ? "animate-spin" : ""} />}
+                        >
+                          Susun
+                        </HoldButton>
+                        {folder.name !== 'Tiada Folder' && (
+                          <button onClick={() => confirmDeleteFolder(folder.name)} className="text-red-400 hover:text-red-600 p-1 ml-1">
+                            <Trash2 size={16} />
+                          </button>
+                        )}
+                      </div>
                     </div>
-                  )}
-                </div>
-              );
-            })}
+                    
+                    {!isCollapsed && (
+                      <div className={cn(
+                        "grid gap-3 animate-in fade-in slide-in-from-top-1 duration-200",
+                        viewMode === 'grid' ? "grid-cols-2" : "grid-cols-1"
+                      )}>
+                        {Array.from(new Map(folderParcels.map(p => [p.id, p])).values()).map(parcel => (
+                          <ParcelCard 
+                            key={`parcel-card-${parcel.id}`} 
+                            parcel={parcel} 
+                            profile={profile}
+                            onStatusChange={onStatusChange}
+                            onMoveClick={() => onMoveClick(parcel.id)}
+                            onViewPOD={onViewPOD}
+                          />
+                        ))}
+                        {folderParcels.length === 0 && folder.name !== 'Tiada Folder' && (
+                          <div className="col-span-full text-center py-6 text-gray-400 text-sm font-medium border-2 border-dashed border-gray-200 rounded-xl">
+                            Tarik parcel ke sini atau guna menu 3-titik
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              });
+            })()}
             
             {filteredParcels.length === 0 && folders.length === 0 && (
               <div className="py-12 flex flex-col items-center justify-center text-gray-400 gap-4">
@@ -1261,31 +1478,45 @@ export default function App() {
 
           {/* Scanner Modal */}
           {isUserGuideOpen && (
-            <UserGuide onClose={() => setIsUserGuideOpen(false)} />
+            <Suspense fallback={<LoadingFallback />}>
+              <UserGuide 
+                onClose={() => setIsUserGuideOpen(false)} 
+                onComplete={() => {
+                  if (user) {
+                    updateDoc(doc(db, 'profiles', user.uid), { hasSeenOnboarding: true })
+                      .catch(err => console.error("Error updating onboarding status:", err));
+                  }
+                }}
+              />
+            </Suspense>
           )}
 
           {isScannerOpen && (
-            <Scanner 
-              onScan={handleScan} 
-              onClose={() => setIsScannerOpen(false)} 
-              quota={profile ? {
-                current: profile.dailyScanCount || 0,
-                limit: TIER_LIMITS[profile.subscriptionTier || 'free'].daily
-              } : undefined}
-            />
+            <Suspense fallback={<LoadingFallback />}>
+              <Scanner 
+                onScan={handleScan} 
+                onClose={() => setIsScannerOpen(false)} 
+                quota={profile ? {
+                  current: profile.dailyScanCount || 0,
+                  limit: TIER_LIMITS[profile.subscriptionTier || 'free'].daily
+                } : undefined}
+              />
+            </Suspense>
           )}
 
           {/* Marking Mode Modal */}
           {isMarkingModeOpen && (
-            <Scanner 
-              mode="mark"
-              onMarkScan={handleMarkingScan}
-              onClose={() => setIsMarkingModeOpen(false)} 
-              quota={profile ? {
-                current: profile.dailyScanCount || 0,
-                limit: TIER_LIMITS[profile.subscriptionTier || 'free'].daily
-              } : undefined}
-            />
+            <Suspense fallback={<LoadingFallback />}>
+              <Scanner 
+                mode="mark"
+                onMarkScan={handleMarkingScan}
+                onClose={() => setIsMarkingModeOpen(false)} 
+                quota={profile ? {
+                  current: profile.dailyScanCount || 0,
+                  limit: TIER_LIMITS[profile.subscriptionTier || 'free'].daily
+                } : undefined}
+              />
+            </Suspense>
           )}
 
           {/* Navigation Mode Overlay */}
@@ -1381,6 +1612,25 @@ export default function App() {
           </AnimatePresence>
 
         <AnimatePresence>
+          {/* Failed Delivery Modal */}
+          {isFailedDeliveryModalOpen && parcelForFailure && (
+            <FailedDeliveryModal 
+              parcel={parcelForFailure}
+              isOpen={isFailedDeliveryModalOpen}
+              onClose={() => {
+                setIsFailedDeliveryModalOpen(false);
+                setParcelForFailure(null);
+              }}
+              onConfirm={markFailed}
+            />
+          )}
+
+          <CODSummaryModal 
+            parcels={parcels}
+            isOpen={isCODSummaryOpen}
+            onClose={() => setIsCODSummaryOpen(false)}
+          />
+
           {/* Parcel Options Modal */}
           {parcelOptionsId && (
             <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center backdrop-blur-sm" onClick={() => setParcelOptionsId(null)}>
@@ -1482,18 +1732,18 @@ export default function App() {
                       >
                         <Folder size={16} className="text-gray-400" /> Tiada
                       </button>
-                      {folders.map(f => (
+                      {folders.filter((f, i, self) => i === self.findIndex(t => t.id === f.id)).map(f => (
                         <button
-                          key={f}
+                          key={`move-to-${f.id}`}
                           onClick={async () => {
                             try {
-                              await updateDoc(doc(db, 'parcels', parcelOptionsId), { folder: f });
+                              await updateDoc(doc(db, 'parcels', parcelOptionsId), { folder: f.name });
                               setParcelOptionsId(null);
                             } catch (e) { handleFirestoreError(e, OperationType.UPDATE, `parcels/${parcelOptionsId}`); }
                           }}
                           className="p-4 rounded-2xl border-2 border-blue-100 bg-blue-50/50 hover:bg-blue-50 text-blue-700 font-bold text-xs flex items-center justify-center gap-2 transition-all"
                         >
-                          <Folder size={16} className="text-blue-500" /> {f}
+                          <Folder size={16} className="text-blue-500" /> {f.name}
                         </button>
                       ))}
                     </div>
@@ -1706,6 +1956,19 @@ export default function App() {
 
                   <div className="p-8 pt-0 space-y-6">
                     <div className="space-y-2">
+                      <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest px-1">Email Pendaftaran</label>
+                      <div className="relative">
+                        <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+                        <input 
+                          type="email" 
+                          value={user?.email || ''} 
+                          readOnly
+                          className="w-full border-2 border-gray-100 bg-gray-100/50 rounded-2xl py-4 pl-12 pr-4 font-bold text-gray-400 cursor-not-allowed outline-none transition-all"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
                       <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest px-1">Nama Rider</label>
                       <div className="relative">
                         <UserIcon className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
@@ -1893,7 +2156,19 @@ export default function App() {
 
       {/* Admin Dashboard */}
       {isAdminDashboardOpen && (
-        <AdminDashboard onClose={() => setIsAdminDashboardOpen(false)} />
+        <Suspense fallback={<div className="fixed inset-0 z-[100] bg-white flex items-center justify-center"><LoadingFallback /></div>}>
+          <AdminDashboard onClose={() => setIsAdminDashboardOpen(false)} />
+        </Suspense>
+      )}
+
+      {/* Legal Modals */}
+      {legalModal.isOpen && (
+        <Suspense fallback={<LoadingFallback />}>
+          <LegalModal 
+            type={legalModal.type} 
+            onClose={() => setLegalModal({ ...legalModal, isOpen: false })} 
+          />
+        </Suspense>
       )}
 
       {/* Payment Success Overlay */}
@@ -2137,32 +2412,36 @@ export default function App() {
               </div>
 
               <div className="space-y-4">
-                {quickFindResults.length > 0 ? (
-                  quickFindResults.map(p => (
-                    <div key={p.id} className="bg-orange-50 border-2 border-orange-100 rounded-3xl p-6 flex items-center justify-between animate-in fade-in slide-in-from-bottom-2">
-                      <div className="flex-1 min-w-0">
-                        <p className="text-[10px] font-black text-orange-400 uppercase tracking-widest mb-1">{p.trackingNumber}</p>
-                        <h4 className="font-black text-gray-900 text-lg truncate">{p.recipientName}</h4>
-                        <p className="text-xs text-gray-500 font-medium truncate">{p.address}</p>
-                      </div>
-                      <div className="flex flex-col items-center ml-4">
-                        <p className="text-[10px] font-black text-orange-500 uppercase mb-1">STOP #</p>
-                        <div className="w-20 h-20 bg-orange-500 text-white rounded-2xl flex items-center justify-center text-4xl font-black shadow-lg shadow-orange-200">
-                          {p.sequenceNumber}
+                {(() => {
+                  const filtered = quickFindResults.filter((p, i, self) => i === self.findIndex(t => t.id === p.id));
+                  if (filtered.length > 0) {
+                    return filtered.map(p => (
+                      <div key={`quickfind-${p.id}`} className="bg-orange-50 border-2 border-orange-100 rounded-3xl p-6 flex items-center justify-between animate-in fade-in slide-in-from-bottom-2">
+                        <div className="flex-1 min-w-0">
+                          <p className="text-[10px] font-black text-orange-400 uppercase tracking-widest mb-1">{p.trackingNumber}</p>
+                          <h4 className="font-black text-gray-900 text-lg truncate">{p.recipientName}</h4>
+                          <p className="text-xs text-gray-500 font-medium truncate">{p.address}</p>
+                        </div>
+                        <div className="flex flex-col items-center ml-4">
+                          <p className="text-[10px] font-black text-orange-500 uppercase mb-1">STOP #</p>
+                          <div className="w-20 h-20 bg-orange-500 text-white rounded-2xl flex items-center justify-center text-4xl font-black shadow-lg shadow-orange-200">
+                            {p.sequenceNumber}
+                          </div>
                         </div>
                       </div>
+                    ));
+                  }
+                  return quickFindQuery ? (
+                    <div className="text-center py-12 text-gray-400">
+                      <AlertCircle size={48} className="mx-auto mb-3 opacity-20" />
+                      <p className="font-bold">Parcel tidak dijumpai.</p>
                     </div>
-                  ))
-                ) : quickFindQuery ? (
-                  <div className="text-center py-12 text-gray-400">
-                    <AlertCircle size={48} className="mx-auto mb-3 opacity-20" />
-                    <p className="font-bold">Parcel tidak dijumpai.</p>
-                  </div>
-                ) : (
-                  <div className="text-center py-12 text-gray-400">
-                    <p className="text-sm font-medium">Sila masukkan maklumat untuk mencari.</p>
-                  </div>
-                )}
+                  ) : (
+                    <div className="text-center py-12 text-gray-400">
+                      <p className="text-sm font-medium">Sila masukkan maklumat untuk mencari.</p>
+                    </div>
+                  );
+                })()}
               </div>
             </motion.div>
           </div>
@@ -2170,7 +2449,7 @@ export default function App() {
       </AnimatePresence>
 
       <AnimatePresence>
-        {selectedPODParcel && selectedPODParcel.podPhotoUrl && (
+        {selectedPODParcel && (selectedPODParcel.podPhotoUrl || selectedPODParcel.failedPhotoUrl) && (
           <div 
             className="fixed inset-0 z-[200] bg-black/90 flex items-center justify-center p-4 backdrop-blur-sm"
             onClick={() => setSelectedPODParcel(null)}
@@ -2191,25 +2470,36 @@ export default function App() {
                 </button>
               </div>
               <img 
-                src={selectedPODParcel.podPhotoUrl} 
-                alt="Proof of Delivery" 
-                className="w-full h-auto max-h-[70vh] object-contain bg-gray-100"
+                src={selectedPODParcel.podPhotoUrl || selectedPODParcel.failedPhotoUrl} 
+                alt="Bukti Penghantaran" 
+                className={cn(
+                  "w-full h-auto max-h-[70vh] object-contain bg-gray-100",
+                  selectedPODParcel.status === 'failed' && "sepia-[0.3]"
+                )}
                 referrerPolicy="no-referrer"
               />
               <div className="p-6 bg-white">
                 <div className="flex items-center gap-3 mb-2">
-                  <div className="bg-green-100 text-green-600 p-2 rounded-xl">
-                    <CheckCircle2 size={20} />
+                  <div className={cn(
+                    "p-2 rounded-xl",
+                    selectedPODParcel.status === 'delivered' ? "bg-green-100 text-green-600" : "bg-red-100 text-red-600"
+                  )}>
+                    {selectedPODParcel.status === 'delivered' ? <CheckCircle2 size={20} /> : <AlertCircle size={20} />}
                   </div>
                   <div>
-                    <h3 className="font-black text-gray-900 leading-none">Bukti Penghantaran</h3>
+                    <h3 className="font-black text-gray-900 leading-none">
+                      {selectedPODParcel.status === 'delivered' ? 'Bukti Penghantaran' : 'Bukti Kegagalan'}
+                    </h3>
                     <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mt-1">
                       {selectedPODParcel.trackingNumber}
                     </p>
                   </div>
                 </div>
                 <p className="text-xs text-gray-500 font-medium leading-relaxed">
-                  Gambar ini disimpan sebagai bukti parcel telah selamat sampai ke tangan penerima.
+                  {selectedPODParcel.status === 'delivered' 
+                    ? 'Gambar ini disimpan sebagai bukti parcel telah selamat sampai ke tangan penerima.'
+                    : `Sebab Gagal: ${selectedPODParcel.failedReason || 'Tidak dinyatakan'}`
+                  }
                 </p>
               </div>
             </motion.div>

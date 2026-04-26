@@ -58,7 +58,8 @@
         "trialStartedAt": { "type": "number" },
         "expiryDate": { "type": "number" },
         "subscriptionType": { "type": "string" },
-        "role": { "type": "string" }
+        "role": { "type": "string" },
+        "hasSeenOnboarding": { "type": "boolean" }
       },
       "required": ["uid", "riderName", "courierCompany"]
     },

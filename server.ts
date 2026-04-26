@@ -55,8 +55,18 @@ async function startServer() {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
-    // Dynamically determine APP_URL if not set
-    const currentAppUrl = process.env.APP_URL || `${req.protocol}://${req.get('host')}`;
+    // Dynamically determine APP_URL if not set or if it's the default internal URL
+    let currentAppUrl = process.env.APP_URL;
+    const requestHost = req.get('x-forwarded-host') || req.get('host');
+    
+    // If APP_URL is missing OR it matches the internal Cloud Run URL format, 
+    // prioritize the host from the request headers
+    if (!currentAppUrl || currentAppUrl.includes('.run.app')) {
+      if (requestHost) {
+        const protocol = req.get('x-forwarded-proto') || req.protocol;
+        currentAppUrl = `${protocol}://${requestHost}`;
+      }
+    }
 
     let amount = 1490; // Default Lite
     if (tier === 'standard') amount = 2990;

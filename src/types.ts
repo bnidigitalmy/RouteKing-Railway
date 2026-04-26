@@ -4,12 +4,15 @@ export interface Parcel {
   recipientName?: string;
   recipientPhone?: string;
   address: string;
-  status: 'pending' | 'delivered' | 'failed';
+  status: 'pending' | 'delivered' | 'failed' | 'retry' | 'return';
   sequenceNumber: number;
   lat?: number;
   lng?: number;
   scannedAt: number;
   deliveredAt?: number;
+  failedAt?: number;
+  failedReason?: string;
+  failedPhotoUrl?: string;
   podPhotoUrl?: string;
   isCOD?: boolean;
   codAmount?: number;
@@ -25,6 +28,7 @@ export interface UserProfile {
   riderName: string;
   courierCompany: string;
   email?: string;
+  phone?: string;
   role?: 'admin' | 'user';
   isPro?: boolean;
   ratePerParcel?: number;
@@ -36,6 +40,7 @@ export interface UserProfile {
   lastScanResetDate?: string; // ISO date string YYYY-MM-DD
   monthlyScanCount?: number;
   lastScanResetMonth?: string; // ISO date string YYYY-MM
+  hasSeenOnboarding?: boolean;
 }
 
 export interface OptimizationResult {

@@ -1,7 +1,7 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { Camera, Upload, Loader2, X, Banknote, MapPin, Hash, CheckCircle, User as UserIcon, Folder, Edit2, Search, RefreshCw, Phone, Zap, ZapOff, Image as ImageIcon } from 'lucide-react';
 import { extractParcelInfo } from '../lib/gemini';
-import { cn } from '../lib/utils';
+import { cn, hapticFeedback } from '../lib/utils';
 import { Parcel } from '../types';
 
 // Simple Beep Sound using Web Audio API
@@ -222,6 +222,7 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan', quota }: S
           setLastScannedTracking(result.trackingNumber);
           setLastScannedTime(Date.now());
           playBeep();
+          hapticFeedback('medium');
         } else {
           setError(`Parcel dengan tracking ${result.trackingNumber} tidak dijumpai dalam senarai.`);
         }
@@ -252,6 +253,7 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan', quota }: S
             if (onScan) {
               await onScan(dataToSubmit);
               playBeep(); // BEEP!
+              hapticFeedback('success');
               setLastScannedTracking(dataToSubmit.trackingNumber);
               setLastScannedTime(Date.now());
               
@@ -266,6 +268,7 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan', quota }: S
             }
           } catch (err: any) {
             playErrorSound(); // Play error sound on duplicate or other save errors
+            hapticFeedback('error');
             setError(err?.message || "Gagal simpan parcel.");
             setIsSaving(false);
           }
@@ -285,10 +288,12 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan', quota }: S
         
         if (mode === 'scan') {
           playBeep(); // Still beep when data is ready for confirmation
+          hapticFeedback('light');
         }
       }
     } catch (err: any) {
       playErrorSound(); // Play error sound on extraction or duplicate error
+      hapticFeedback('error');
       const errMsg = err?.message || "Gagal membaca label.";
       setError(`${errMsg} Pastikan gambar label terang dan jelas.`);
       console.error("Scanner Error:", err);
@@ -321,11 +326,13 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan', quota }: S
   const handleSubmit = async () => {
     if (!editAddress || !editTracking) {
       playErrorSound();
+      hapticFeedback('error');
       setError("Sila isi alamat dan nombor tracking.");
       return;
     }
     if (isCOD && (!codAmount || isNaN(parseFloat(codAmount)))) {
       playErrorSound();
+      hapticFeedback('error');
       setError("Sila masukkan jumlah COD yang sah.");
       return;
     }

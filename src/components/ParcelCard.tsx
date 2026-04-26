@@ -1,8 +1,9 @@
 import React, { memo } from 'react';
-import { MapPin, Navigation, CheckCircle2, Circle, ExternalLink, Banknote, User as UserIcon, Folder, MoreVertical, Phone, MessageSquare, Copy, Image as ImageIcon, X, Edit2 } from 'lucide-react';
+import { MapPin, Navigation, CheckCircle2, Circle, ExternalLink, Banknote, User as UserIcon, Folder, MoreVertical, Phone, MessageSquare, Copy, Image as ImageIcon, X, Edit2, RefreshCw, AlertCircle } from 'lucide-react';
 import { Parcel, UserProfile } from '../types';
 import { cn, getGoogleMapsLetter } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
+import { HoldButton } from './ui/HoldButton';
 
 interface ParcelCardProps {
   parcel: Parcel;
@@ -55,22 +56,42 @@ export const ParcelCard = memo(function ParcelCard({ parcel, profile, onStatusCh
     window.open(url, '_blank');
   };
 
+  const openWaze = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const url = parcel.lat && parcel.lng 
+      ? `https://waze.com/ul?ll=${parcel.lat},${parcel.lng}&navigate=yes`
+      : `https://waze.com/ul?q=${encodeURIComponent(parcel.address)}&navigate=yes`;
+    window.open(url, '_blank');
+  };
+
   return (
     <motion.div 
       layout
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, scale: 0.95 }}
-      draggable
-      onDragStart={(e) => {
-        e.dataTransfer.setData('text/plain', parcel.id);
-        e.dataTransfer.effectAllowed = 'move';
-      }}
-      className={cn(
-        "relative bg-white rounded-2xl p-4 shadow-sm border-2 transition-all active:scale-[0.98] cursor-grab active:cursor-grabbing",
-        parcel.status === 'delivered' ? "border-green-100 bg-green-50/30" : "border-gray-50"
-      )}
+      className="relative"
     >
+      <div
+        draggable
+        onDragStart={(e) => {
+          e.dataTransfer.setData('text/plain', parcel.id);
+          e.dataTransfer.effectAllowed = 'move';
+        }}
+        className={cn(
+          "relative bg-white rounded-2xl p-4 shadow-sm border-2 transition-all active:scale-[0.98] cursor-grab active:cursor-grabbing",
+          parcel.status === 'delivered' ? "border-green-100 bg-green-50/30" : 
+          parcel.status === 'failed' ? "border-red-100 bg-red-50/30" : 
+          parcel.status === 'retry' ? "border-orange-100 bg-orange-50/30" :
+          parcel.status === 'return' ? "border-gray-200 bg-gray-50/50 grayscale" :
+          "border-gray-50"
+        )}
+      >
+      {parcel.status === 'return' && (
+        <div className="absolute top-2 right-2 z-10">
+          <span className="bg-gray-800 text-white text-[8px] font-black px-2 py-0.5 rounded-full uppercase tracking-widest">RETURN TO HUB</span>
+        </div>
+      )}
       <div className="flex gap-4">
         {/* Sequence Number Badge */}
         <div className={cn(
@@ -91,6 +112,8 @@ export const ParcelCard = memo(function ParcelCard({ parcel, profile, onStatusCh
                   {parcel.trackingNumber}
                 </p>
                 <button 
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onMouseDown={(e) => e.stopPropagation()}
                   onClick={(e) => {
                     e.stopPropagation();
                     navigator.clipboard.writeText(parcel.trackingNumber);
@@ -118,8 +141,29 @@ export const ParcelCard = memo(function ParcelCard({ parcel, profile, onStatusCh
                   )}
                 </div>
               )}
+              {parcel.status === 'failed' && (
+                <div className="flex flex-col items-end">
+                  <span className="flex items-center gap-1 text-[10px] font-black text-red-600 bg-red-100 px-2 py-0.5 rounded-full uppercase">
+                    <X size={10} /> Gagal
+                  </span>
+                  {parcel.failedAt && (
+                    <span className="text-[9px] font-bold text-gray-400 mt-0.5">
+                      {new Date(parcel.failedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  )}
+                </div>
+              )}
+              {parcel.status === 'retry' && (
+                <div className="flex flex-col items-end">
+                  <span className="flex items-center gap-1 text-[10px] font-black text-orange-600 bg-orange-100 px-2 py-0.5 rounded-full uppercase">
+                    <RefreshCw size={10} className="animate-spin-slow" /> Retry
+                  </span>
+                </div>
+              )}
               {onMoveClick && (
                 <button 
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onMouseDown={(e) => e.stopPropagation()}
                   onClick={(e) => { e.stopPropagation(); onMoveClick(); }}
                   className="p-2 -mr-2 text-gray-400 hover:bg-gray-100 hover:text-gray-700 rounded-full transition-colors"
                 >
@@ -155,6 +199,26 @@ export const ParcelCard = memo(function ParcelCard({ parcel, profile, onStatusCh
             </div>
           )}
 
+          {parcel.status === 'failed' && parcel.failedReason && (
+            <div className="mt-2 bg-red-50 border border-red-100 p-3 rounded-xl text-xs font-bold text-red-700 flex flex-col gap-2">
+              <div className="flex items-start gap-2">
+                <AlertCircle size={14} className="shrink-0 mt-0.5" />
+                <span>Gagal: {parcel.failedReason}</span>
+              </div>
+              {parcel.failedPhotoUrl && (
+                <button 
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onViewPOD?.(parcel); // Reuse onViewPOD for failed photo
+                  }}
+                  className="flex items-center gap-1.5 text-[10px] text-red-500 hover:text-red-700 underline"
+                >
+                  <ImageIcon size={12} /> Lihat Bukti Gagal
+                </button>
+              )}
+            </div>
+          )}
+
           <div className="flex flex-wrap gap-2 mt-2">
             {parcel.isCOD && (
               <div className="inline-flex items-center gap-1.5 bg-orange-100 text-orange-700 px-2.5 py-1 rounded-md text-[10px] font-black">
@@ -175,6 +239,8 @@ export const ParcelCard = memo(function ParcelCard({ parcel, profile, onStatusCh
           <div className="grid grid-cols-2 gap-2 mt-4">
             {parcel.status === 'delivered' && parcel.podPhotoUrl && (
               <button
+                onPointerDown={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
                 onClick={(e) => { e.stopPropagation(); onViewPOD?.(parcel); }}
                 className="col-span-2 flex items-center justify-center gap-2 bg-purple-50 hover:bg-purple-100 text-purple-700 font-black py-2.5 rounded-xl text-xs transition-all active:scale-95 mb-1 border border-purple-100"
               >
@@ -185,12 +251,16 @@ export const ParcelCard = memo(function ParcelCard({ parcel, profile, onStatusCh
             {parcel.recipientPhone && (
               <div className="col-span-2 flex gap-2 mb-1">
                 <button 
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onMouseDown={(e) => e.stopPropagation()}
                   onClick={makeCall}
                   className="flex-1 flex items-center justify-center gap-2 bg-blue-50 hover:bg-blue-100 text-blue-700 font-black py-2.5 rounded-xl text-xs transition-all active:scale-95"
                 >
                   <Phone size={14} /> Call
                 </button>
                 <button 
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onMouseDown={(e) => e.stopPropagation()}
                   onClick={sendWhatsApp}
                   className="flex-1 flex items-center justify-center gap-2 bg-green-50 hover:bg-green-100 text-green-700 font-black py-2.5 rounded-xl text-xs transition-all active:scale-95"
                 >
@@ -200,30 +270,55 @@ export const ParcelCard = memo(function ParcelCard({ parcel, profile, onStatusCh
             )}
             
             <button
+              onPointerDown={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
               onClick={openNavigation}
               className="flex items-center justify-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-black py-3 rounded-xl text-xs transition-all active:scale-95"
             >
               <Navigation size={14} />
-              Navigasi
+              G-Maps
+            </button>
+            <button
+              onPointerDown={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={openWaze}
+              className="flex items-center justify-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-black py-3 rounded-xl text-xs transition-all active:scale-95"
+            >
+              <Navigation size={14} className="rotate-90" />
+              Waze
             </button>
             
             {parcel.status !== 'delivered' ? (
-              <button
-                onClick={(e) => { e.stopPropagation(); onStatusChange(parcel.id, 'delivered'); }}
-                className="flex items-center justify-center gap-2 bg-green-600 hover:bg-green-700 text-white font-black py-3 rounded-xl text-xs transition-all active:scale-95 shadow-md shadow-green-100"
-              >
-                <CheckCircle2 size={14} />
-                Hantar
-              </button>
+              <div className="col-span-2 flex gap-2">
+                <button
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => { e.stopPropagation(); onStatusChange(parcel.id, 'failed'); }}
+                  className="flex-1 flex items-center justify-center gap-2 bg-red-50 hover:bg-red-100 text-red-600 font-black py-3 rounded-xl text-xs transition-all active:scale-95 border border-red-100"
+                >
+                  <X size={14} />
+                  Gagal
+                </button>
+                <HoldButton
+                  onConfirm={() => onStatusChange(parcel.id, 'delivered')}
+                  className="flex-[2] flex items-center justify-center gap-2 bg-green-600 hover:bg-green-700 text-white font-black py-3 rounded-xl text-xs shadow-md shadow-green-100"
+                  icon={<CheckCircle2 size={14} />}
+                >
+                  Hantar
+                </HoldButton>
+              </div>
             ) : (
-              <button
-                onClick={(e) => { e.stopPropagation(); onStatusChange(parcel.id, 'pending'); }}
-                className="flex items-center justify-center gap-2 bg-white border-2 border-gray-100 text-gray-400 font-black py-3 rounded-xl text-xs transition-all active:scale-95"
+              <HoldButton
+                onConfirm={() => onStatusChange(parcel.id, 'pending')}
+                holdTime={1000}
+                colorClass="bg-gray-400"
+                className="flex items-center justify-center gap-2 bg-white border-2 border-gray-100 text-gray-400 font-black py-3 rounded-xl text-xs"
               >
                 Reset
-              </button>
+              </HoldButton>
             )}
           </div>
+        </div>
         </div>
       </div>
     </motion.div>

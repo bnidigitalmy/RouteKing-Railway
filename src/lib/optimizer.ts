@@ -1,6 +1,22 @@
 import { Parcel } from "../types";
 import { withRetry } from "./utils";
 
+// Cache to store previous optimization results
+const routeCache = new Map<string, Parcel[]>();
+
+/**
+ * Generates a stable key for the current request context
+ */
+function getRouteKey(parcels: Parcel[], startPoint: { lat: number; lng: number }): string {
+  // Use a coarse grid for start point to allow small movements to hit cache
+  const coarseLat = Math.round(startPoint.lat * 1000) / 1000;
+  const coarseLng = Math.round(startPoint.lng * 1000) / 1000;
+  
+  // Sort IDs to make key independent of current order
+  const ids = parcels.map(p => p.id).sort().join(',');
+  return `${coarseLat},${coarseLng}|${ids}`;
+}
+
 /**
  * Fallback: Simple Nearest Neighbor Algorithm (Straight-line distance)
  */
@@ -49,12 +65,20 @@ function fallbackOptimizeRoute(parcels: Parcel[], startPoint: { lat: number; lng
 export async function optimizeRoute(parcels: Parcel[], startPoint: { lat: number; lng: number }): Promise<Parcel[]> {
   if (parcels.length <= 1) return parcels;
 
+  const cacheKey = getRouteKey(parcels, startPoint);
+  if (routeCache.has(cacheKey)) {
+    console.log("[Router] Using cached route optimization result");
+    return routeCache.get(cacheKey)!;
+  }
+
   try {
     // OSRM expects coordinates in longitude,latitude format
     // We limit to ~100 coordinates to avoid URL length limits on public OSRM API
     if (parcels.length > 100) {
       console.warn("Too many parcels for OSRM, falling back to straight-line");
-      return fallbackOptimizeRoute(parcels, startPoint);
+      const fallback = fallbackOptimizeRoute(parcels, startPoint);
+      routeCache.set(cacheKey, fallback);
+      return fallback;
     }
 
     const coords = [
@@ -93,13 +117,18 @@ export async function optimizeRoute(parcels: Parcel[], startPoint: { lat: number
     }
 
     // Filter out any undefined (just in case) and reassign sequence numbers
-    return optimized.filter(Boolean).map((p, index) => ({
+    const result = optimized.filter(Boolean).map((p, index) => ({
       ...p,
       sequenceNumber: index + 1
     }));
 
+    routeCache.set(cacheKey, result);
+    return result;
+
   } catch (error) {
     console.warn("OSRM routing failed, falling back to straight-line distance", error);
-    return fallbackOptimizeRoute(parcels, startPoint);
+    const fallback = fallbackOptimizeRoute(parcels, startPoint);
+    routeCache.set(cacheKey, fallback);
+    return fallback;
   }
 }
