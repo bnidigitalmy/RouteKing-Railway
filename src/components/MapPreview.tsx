@@ -17,7 +17,7 @@ L.Icon.Default.mergeOptions({
 // Custom numbered icon generator
 const createNumberedIcon = (relativeIndex: number, absoluteNumber: number, status: Parcel['status']) => {
   const bgColor = status === 'delivered' ? 'bg-green-500' : status === 'failed' ? 'bg-red-500' : 'bg-blue-600';
-  const letter = String.fromCharCode(66 + relativeIndex); // Starts from B (66) because A is Hub
+  const letter = String.fromCharCode(65 + relativeIndex); // Starts from A (65)
   return L.divIcon({
     className: 'custom-div-icon',
     html: `<div class="${bgColor} text-white font-bold rounded-full w-10 h-10 flex flex-col items-center justify-center border-2 border-white shadow-md">
@@ -35,10 +35,9 @@ const createStartIcon = (isGPS: boolean) => {
   return L.divIcon({
     className: 'custom-div-icon',
     html: `<div class="relative flex items-center justify-center">
-            ${isGPS ? '<div class="absolute w-8 h-8 bg-red-500/30 rounded-full animate-ping"></div>' : ''}
+            ${isGPS ? '<div class="absolute w-8 h-8 bg-black/10 rounded-full animate-ping"></div>' : ''}
             <div class="bg-red-500 text-white font-black rounded-full w-10 h-10 flex flex-col items-center justify-center border-2 border-white shadow-md">
-              <span class="text-lg leading-none">A</span>
-              <span class="text-[8px] leading-none opacity-90 font-bold">${isGPS ? 'SAYA' : 'MULA'}</span>
+              <span class="text-[10px] leading-tight font-black">${isGPS ? 'SAYA' : 'MULA'}</span>
             </div>
           </div>`,
     iconSize: [40, 40],
@@ -86,6 +85,9 @@ export function MapPreview({ parcels, startPoint }: MapPreviewProps) {
 
     const fetchRoute = async () => {
       setIsRouting(true);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s timeout
+
       try {
         // Limit OSRM to reasonable amount of waypoints (OSRM limit is usually around 100, but let's keep it safe)
         const sortedParcels = [...parcels].sort((a, b) => a.sequenceNumber - b.sequenceNumber);
@@ -95,19 +97,39 @@ export function MapPreview({ parcels, startPoint }: MapPreviewProps) {
         ];
 
         const coords = points.map(p => p.join(',')).join(';');
-        const response = await fetch(`https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson`);
-        const data = await response.json();
         
-        if (data.code === 'Ok' && data.routes && data.routes[0]) {
-          const path = data.routes[0].geometry.coordinates.map((c: any) => [c[1], c[0]] as [number, number]);
-          setRoadPath(path);
-        } else {
+        // Try multiple OSRM servers for better reliability
+        const endpoints = [
+          `https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson`,
+          `https://routing.openstreetmap.de/routed-car/route/v1/driving/${coords}?overview=full&geometries=geojson`
+        ];
+
+        let success = false;
+        for (const url of endpoints) {
+          try {
+            const response = await fetch(url, { signal: controller.signal });
+            const data = await response.json();
+            
+            if (data.code === 'Ok' && data.routes && data.routes[0]) {
+              const path = data.routes[0].geometry.coordinates.map((c: any) => [c[1], c[0]] as [number, number]);
+              setRoadPath(path);
+              success = true;
+              break;
+            }
+          } catch (e) {
+            // Silently try next endpoint
+            continue;
+          }
+        }
+
+        if (!success) {
           setRoadPath(routePositions);
         }
       } catch (error) {
-        console.error("OSRM Routing Error:", error);
+        // Silent fallback to straight lines
         setRoadPath(routePositions);
       } finally {
+        clearTimeout(timeoutId);
         setIsRouting(false);
       }
     };
@@ -243,11 +265,11 @@ export function MapPreview({ parcels, startPoint }: MapPreviewProps) {
       <div className="absolute bottom-4 left-4 bg-white/90 backdrop-blur-sm p-3 rounded-xl shadow-lg border border-gray-100 z-[1000] text-xs font-bold space-y-2">
         <div className="flex items-center gap-2">
           <div className="w-3 h-3 rounded-full bg-red-500"></div>
-          <span>A = {isGPSActive ? 'Lokasi Saya' : 'Mula (Hub)'}</span>
+          <span>{isGPSActive ? 'Lokasi Saya' : 'Mula (Hub)'}</span>
         </div>
         <div className="flex items-center gap-2">
-          <div className="w-3 h-3 rounded-full bg-blue-500"></div>
-          <span>B-Z = Menunggu</span>
+          <div className="w-3 h-3 rounded-full bg-blue-600"></div>
+          <span>A-Z = Menunggu</span>
         </div>
         <div className="flex items-center gap-2">
           <div className="w-3 h-3 rounded-full bg-green-500"></div>
