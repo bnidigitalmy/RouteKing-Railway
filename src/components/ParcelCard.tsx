@@ -1,9 +1,10 @@
 import React, { memo } from 'react';
-import { MapPin, Navigation, CheckCircle2, Circle, ExternalLink, Banknote, User as UserIcon, Folder, MoreVertical, Phone, MessageSquare, Copy, Image as ImageIcon, X, Edit2, RefreshCw, AlertCircle } from 'lucide-react';
+import { MapPin, Navigation, CheckCircle2, Circle, ExternalLink, Banknote, User as UserIcon, Folder, MoreVertical, Phone, MessageSquare, Copy, Image as ImageIcon, X, Edit2, RefreshCw, AlertCircle, Package } from 'lucide-react';
 import { Parcel, UserProfile } from '../types';
 import { cn, getGoogleMapsLetter } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
-import { HoldButton } from './ui/HoldButton';
+import { ConfirmationModal } from './ui/ConfirmationModal';
+import { useState } from 'react';
 
 interface ParcelCardProps {
   parcel: Parcel;
@@ -14,6 +15,9 @@ interface ParcelCardProps {
 }
 
 export const ParcelCard = memo(function ParcelCard({ parcel, profile, onStatusChange, onMoveClick, onViewPOD }: ParcelCardProps) {
+  const [showHantarConfirm, setShowHantarConfirm] = useState(false);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+
   const openNavigation = (e: React.MouseEvent) => {
     e.stopPropagation();
     const url = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(parcel.address)}`;
@@ -299,28 +303,53 @@ export const ParcelCard = memo(function ParcelCard({ parcel, profile, onStatusCh
                   <X size={14} />
                   Gagal
                 </button>
-                <HoldButton
-                  onConfirm={() => onStatusChange(parcel.id, 'delivered')}
-                  className="flex-[2] flex items-center justify-center gap-2 bg-green-600 hover:bg-green-700 text-white font-black py-3 rounded-xl text-xs shadow-md shadow-green-100"
-                  icon={<CheckCircle2 size={14} />}
+                <button
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => { e.stopPropagation(); setShowHantarConfirm(true); }}
+                  className="flex-[2] flex items-center justify-center gap-2 bg-green-600 hover:bg-green-700 text-white font-black py-3 rounded-xl text-xs shadow-md shadow-green-100 transition-all active:scale-95"
                 >
+                  <CheckCircle2 size={14} />
                   Hantar
-                </HoldButton>
+                </button>
               </div>
             ) : (
-              <HoldButton
-                onConfirm={() => onStatusChange(parcel.id, 'pending')}
-                holdTime={1000}
-                colorClass="bg-gray-400"
-                className="flex items-center justify-center gap-2 bg-white border-2 border-gray-100 text-gray-400 font-black py-3 rounded-xl text-xs"
+              <button
+                onPointerDown={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => { e.stopPropagation(); setShowResetConfirm(true); }}
+                className="w-full flex items-center justify-center gap-2 bg-white border-2 border-gray-100 text-gray-400 font-black py-3 rounded-xl text-xs transition-all active:scale-95"
               >
+                <RefreshCw size={14} />
                 Reset
-              </HoldButton>
+              </button>
             )}
           </div>
         </div>
         </div>
       </div>
+
+      <ConfirmationModal
+        isOpen={showHantarConfirm}
+        onClose={() => setShowHantarConfirm(false)}
+        onConfirm={() => onStatusChange(parcel.id, 'delivered')}
+        title="Sahkan Hantar?"
+        description={`Adakah anda pasti parcel untuk ${parcel.recipientName || 'penerima ini'} telah berjaya dihantar?`}
+        confirmText="Ya, Selesai"
+        variant="success"
+        icon={<CheckCircle2 size={32} />}
+      />
+
+      <ConfirmationModal
+        isOpen={showResetConfirm}
+        onClose={() => setShowResetConfirm(false)}
+        onConfirm={() => onStatusChange(parcel.id, 'pending')}
+        title="Reset Status?"
+        description="Adakah anda pasti mahu kembalikan status parcel ini kepada 'Aktif'?"
+        confirmText="Ya, Reset"
+        variant="warning"
+        icon={<RefreshCw size={32} />}
+      />
     </motion.div>
   );
 });

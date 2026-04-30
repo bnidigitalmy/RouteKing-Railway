@@ -22,6 +22,7 @@ import { getCoordinates } from './lib/gemini';
 import { cn, hapticFeedback } from './lib/utils';
 import confetti from 'canvas-confetti';
 import { motion, AnimatePresence } from 'motion/react';
+import { ConfirmationModal } from './components/ui/ConfirmationModal';
 import { 
   auth, 
   db, 
@@ -94,6 +95,8 @@ export default function App() {
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const [isFailedDeliveryModalOpen, setIsFailedDeliveryModalOpen] = useState(false);
   const [isCODSummaryOpen, setIsCODSummaryOpen] = useState(false);
+  const [isSusunConfirmOpen, setIsSusunConfirmOpen] = useState(false);
+  const [susunTarget, setSusunTarget] = useState<string | null | undefined>(undefined);
   const [parcelForFailure, setParcelForFailure] = useState<Parcel | null>(null);
   const [collapsedFolders, setCollapsedFolders] = useState<Record<string, boolean>>({});
   const [isQuickFindOpen, setIsQuickFindOpen] = useState(false);
@@ -1216,20 +1219,22 @@ export default function App() {
 
           <div className="flex flex-col gap-2">
             <div className="flex gap-2">
-              <HoldButton
-                onConfirm={() => handleOptimize()}
-                holdTime={1500}
-                colorClass="bg-blue-600"
+              <button
+                onClick={() => {
+                  setSusunTarget(undefined);
+                  setIsSusunConfirmOpen(true);
+                }}
+                disabled={isOptimizing || parcels.filter(p => p.status === 'pending').length === 0}
                 className={cn(
-                  "flex-1 py-3 px-4 rounded-2xl font-bold text-sm shadow-md active:scale-95",
+                  "flex-1 py-3 px-4 rounded-2xl font-bold text-sm shadow-md active:scale-95 flex items-center justify-center gap-2",
                   isOptimizing 
                     ? "bg-gray-100 text-gray-400 cursor-not-allowed pointer-events-none" 
                     : "bg-blue-600 text-white"
                 )}
-                icon={isOptimizing ? <RefreshCw size={18} className="animate-spin" /> : <Navigation size={18} />}
               >
+                {isOptimizing ? <RefreshCw size={18} className="animate-spin" /> : <Navigation size={18} />}
                 {isOptimizing ? 'Menyusun...' : 'Susun Laluan'}
-              </HoldButton>
+              </button>
               
               <button
                 onClick={() => {
@@ -1397,20 +1402,22 @@ export default function App() {
                           <Navigation size={14} />
                           Mula
                         </button>
-                        <HoldButton 
-                          onConfirm={() => handleOptimize(folder.name)} 
-                          holdTime={1000}
-                          colorClass="bg-blue-600"
+                        <button 
+                          onClick={() => {
+                            setSusunTarget(folder.name);
+                            setIsSusunConfirmOpen(true);
+                          }}
+                          disabled={isOptimizing || folderParcels.filter(p => p.status !== 'delivered').length === 0}
                           className={cn(
-                            "flex items-center gap-1 text-[10px] font-black px-2 py-1.5 rounded-lg border",
+                            "flex items-center gap-1 text-[10px] font-black px-2 py-1.5 rounded-lg border flex items-center justify-center gap-1",
                             isOptimizing || folderParcels.filter(p => p.status !== 'delivered').length === 0
                               ? "bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed pointer-events-none"
-                              : "text-blue-600 bg-blue-50 border-blue-100"
+                              : "text-blue-600 bg-blue-50 border-blue-100 active:scale-95 transition-all"
                           )}
-                          icon={<RefreshCw size={12} className={isOptimizing ? "animate-spin" : ""} />}
                         >
+                          <RefreshCw size={12} className={isOptimizing ? "animate-spin" : ""} />
                           Susun
-                        </HoldButton>
+                        </button>
                         {folder.name !== 'Tiada Folder' && (
                           <button onClick={() => confirmDeleteFolder(folder.name)} className="text-red-400 hover:text-red-600 p-1 ml-1">
                             <Trash2 size={16} />
@@ -1881,57 +1888,71 @@ export default function App() {
             </div>
           )}
 
-          {folderToDelete && (
-            <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
-              <div className="bg-white w-full max-w-sm rounded-2xl p-6 animate-in zoom-in-95 shadow-2xl">
-                <h3 className="font-bold text-lg mb-2 text-gray-800">Padam Folder?</h3>
-                <p className="text-gray-600 text-sm mb-6">Adakah anda pasti mahu memadam folder "{folderToDelete}"? Parcel di dalam akan dikembalikan ke "Tiada Folder".</p>
-                <div className="flex gap-3">
-                  <button onClick={() => setFolderToDelete(null)} className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition-colors">Batal</button>
-                  <button onClick={executeDeleteFolder} className="flex-1 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl transition-colors">Padam</button>
-                </div>
-              </div>
-            </div>
-          )}
+          <ConfirmationModal
+            isOpen={!!folderToDelete}
+            onClose={() => setFolderToDelete(null)}
+            onConfirm={executeDeleteFolder}
+            variant="danger"
+            title="Padam Folder?"
+            description={`Adakah anda pasti mahu memadam folder "${folderToDelete}"? Parcel di dalam akan dikembalikan ke "Tiada Folder".`}
+            confirmText="Padam Folder"
+            icon={<Folder size={32} />}
+          />
 
           {isClearAllModalOpen && (
             <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
-              <div className="bg-white w-full max-w-sm rounded-2xl p-6 animate-in zoom-in-95 shadow-2xl">
-                <h3 className="font-bold text-lg mb-2 text-gray-800">Padam Semua Data?</h3>
-                <p className="text-gray-600 text-sm mb-6">Adakah anda pasti mahu memadam semua data parcel? Tindakan ini tidak boleh diundur.</p>
-                <div className="flex gap-3">
-                  <button onClick={() => setIsClearAllModalOpen(false)} className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition-colors">Batal</button>
-                  <button onClick={executeClearAll} className="flex-1 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl transition-colors">Padam Semua</button>
+              <div className="bg-white w-full max-w-sm rounded-[2rem] p-6 animate-in zoom-in-95 shadow-2xl">
+                <div className="flex flex-col items-center text-center space-y-4">
+                  <div className="p-4 rounded-full bg-red-50 text-red-500">
+                    <Trash2 size={32} />
+                  </div>
+                  <div className="space-y-2">
+                    <h3 className="text-xl font-black text-gray-900 leading-tight">Padam Semua Data?</h3>
+                    <p className="text-sm font-medium text-gray-500 px-2">Adakah anda pasti mahu memadam semua data parcel? Tindakan ini tidak boleh diundur.</p>
+                  </div>
+                  <div className="flex flex-col w-full gap-2 pt-2">
+                    <button onClick={executeClearAll} className="w-full py-4 rounded-2xl bg-red-600 text-white font-black text-sm transition-all active:scale-95 shadow-lg">Padam Semua</button>
+                    <button onClick={() => setIsClearAllModalOpen(false)} className="w-full py-4 rounded-2xl bg-gray-50 text-gray-400 font-bold text-sm hover:bg-gray-100 transition-all active:scale-95">Batal</button>
+                  </div>
                 </div>
               </div>
             </div>
           )}
 
-          {isClearDeliveredModalOpen && (
-            <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
-              <div className="bg-white w-full max-w-sm rounded-2xl p-6 animate-in zoom-in-95 shadow-2xl">
-                <h3 className="font-bold text-lg mb-2 text-gray-800">Padam Sejarah?</h3>
-                <p className="text-gray-600 text-sm mb-6">Adakah anda pasti mahu memadam semua sejarah penghantaran yang telah selesai?</p>
-                <div className="flex gap-3">
-                  <button onClick={() => setIsClearDeliveredModalOpen(false)} className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition-colors">Batal</button>
-                  <button onClick={executeClearDelivered} className="flex-1 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl transition-colors">Padam Sejarah</button>
-                </div>
-              </div>
-            </div>
-          )}
+          <ConfirmationModal
+            isOpen={isSusunConfirmOpen}
+            onClose={() => setIsSusunConfirmOpen(false)}
+            onConfirm={() => handleOptimize(susunTarget)}
+            variant="primary"
+            title="Sahkan Susun?"
+            description={susunTarget === undefined 
+              ? "Sistem akan menyusun laluan untuk SEMUA parcel aktif mengikut kedudukan paling dekat dari Hub." 
+              : `Sistem akan menyusun semula parcel dalam folder '${susunTarget}' mengikut turutan jalan yang paling efisien.`}
+            confirmText="Ya, Susun Sekarang"
+            icon={<Navigation size={32} />}
+          />
 
-          {parcelToDelete && (
-            <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
-              <div className="bg-white w-full max-w-sm rounded-2xl p-6 animate-in zoom-in-95 shadow-2xl">
-                <h3 className="font-bold text-lg mb-2 text-gray-800">Padam Parcel?</h3>
-                <p className="text-gray-600 text-sm mb-6">Adakah anda pasti mahu memadam parcel ini?</p>
-                <div className="flex gap-3">
-                  <button onClick={() => setParcelToDelete(null)} className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition-colors">Batal</button>
-                  <button onClick={confirmDeleteParcel} className="flex-1 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl transition-colors">Padam</button>
-                </div>
-              </div>
-            </div>
-          )}
+          <ConfirmationModal
+            isOpen={isClearDeliveredModalOpen}
+            onClose={() => setIsClearDeliveredModalOpen(false)}
+            onConfirm={executeClearDelivered}
+            variant="danger"
+            title="Padam Sejarah?"
+            description="Adakah anda pasti mahu memadam semua sejarah penghantaran yang telah selesai?"
+            confirmText="Padam Sejarah"
+            icon={<Trash2 size={32} />}
+          />
+
+          <ConfirmationModal
+            isOpen={!!parcelToDelete}
+            onClose={() => setParcelToDelete(null)}
+            onConfirm={confirmDeleteParcel}
+            variant="danger"
+            title="Padam Parcel?"
+            description="Adakah anda pasti mahu memadam parcel ini?"
+            confirmText="Padam"
+            icon={<Trash2 size={32} />}
+          />
 
           {/* Profile Modal */}
           {isProfileModalOpen && (
