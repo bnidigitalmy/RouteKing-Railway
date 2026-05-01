@@ -1,14 +1,14 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    
+
     // 0. Global Safety Net
     match /{document=**} {
       allow read, write: if false;
     }
 
     // ===============================================================
-    // Phase 3: Primitive Definition
+    // Primitive Definitions
     // ===============================================================
 
     function isSignedIn() { return request.auth != null; }
@@ -16,18 +16,16 @@ service cloud.firestore {
     function incoming() { return request.resource.data; }
     function existing() { return resource.data; }
 
-    function isAdmin() { 
-      return isSignedIn() && 
-        (
-          (exists(/databases/$(database)/documents/profiles/$(request.auth.uid)) && 
-           get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.get('role', 'user') == 'admin') ||
-          (request.auth.token.email_verified == true && request.auth.token.email == "bnidigital.my@gmail.com")
-        );
+    // Admin: role stored in profile document (not hardcoded email)
+    function isAdmin() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/profiles/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.get('role', 'user') == 'admin';
     }
 
     function isOwner(uid) { return isSignedIn() && request.auth.uid == uid; }
 
-    // Helper to check if a subscription is active (Trial or Pro)
+    // Check whether the user's subscription (trial or paid) is active
     function isSubscriptionActive() {
       let profile = get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data;
       let now = request.time.toMillis();
@@ -39,7 +37,7 @@ service cloud.firestore {
     }
 
     // ===============================================================
-    // Entity Validations (Pillar 2)
+    // Entity Validations
     // ===============================================================
 
     function isValidParcel(data) {
@@ -87,40 +85,46 @@ service cloud.firestore {
     // Profiles
     match /profiles/{userId} {
       allow read: if isOwner(userId) || isAdmin();
-      
-      allow create: if isOwner(userId) && isValidProfile(incoming()) && 
-                    !('isPro' in incoming()) && 
-                    !('role' in incoming()) && 
+
+      // Create: owner only; block elevation of privilege fields
+      allow create: if isOwner(userId) && isValidProfile(incoming()) &&
+                    !('isPro' in incoming()) &&
+                    !('role' in incoming()) &&
                     !('expiryDate' in incoming()) &&
-                    // Trial start validation
-                    (!('trialStartedAt' in incoming()) || 
-                      (incoming().trialStartedAt >= (request.time.toMillis() - 60000) && 
+                    // trialStartedAt must be within ±60 s of server time if supplied
+                    (!('trialStartedAt' in incoming()) ||
+                      (incoming().trialStartedAt >= (request.time.toMillis() - 60000) &&
                        incoming().trialStartedAt <= (request.time.toMillis() + 60000)));
 
+      // Update: restrict to safe field subsets
       allow update: if (isOwner(userId) && isValidProfile(incoming()) && (
-        // Action: Basic Info update
+        // Basic info update (no subscription fields)
         (incoming().diff(existing()).affectedKeys().hasOnly(['riderName', 'courierCompany', 'hasSeenOnboarding'])) ||
-        // Action: Trial Claim
-        (incoming().diff(existing()).affectedKeys().hasOnly(['trialStartedAt']) && 
+        // Trial claim — only allowed once (existing trialStartedAt must be 0/absent)
+        (incoming().diff(existing()).affectedKeys().hasOnly(['trialStartedAt']) &&
          existing().get('trialStartedAt', 0) == 0 &&
          incoming().trialStartedAt >= (request.time.toMillis() - 60000))
       )) || isAdmin();
+      // Subscription fields (isPro, expiryDate, subscriptionTier, etc.) are
+      // only writable by the server via the Admin SDK — no client rule permits them.
     }
 
     // Parcels
     match /parcels/{parcelId} {
       allow read: if isSignedIn() && existing().uid == request.auth.uid || isAdmin();
-      allow list: if isSignedIn() && resource.data.uid == request.auth.uid; // Pillar 8
-      
+      allow list: if isSignedIn() && resource.data.uid == request.auth.uid;
+
       allow create: if isSignedIn() && isSubscriptionActive() && isValidParcel(incoming()) && isValidId(parcelId);
-      
-      allow update: if (isSignedIn() && existing().uid == request.auth.uid && isSubscriptionActive() && (
-        // Pillar 4 Action-based updates
-        // Action: Update Status
+
+      allow update: if (isSignedIn() && existing().uid == request.auth.uid &&
+                        // Immutability: uid can never change
+                        incoming().uid == existing().uid &&
+                        isSubscriptionActive() && (
+        // Action: Update status / delivery info
         (incoming().diff(existing()).affectedKeys().hasOnly(['status', 'scannedAt', 'deliveredAt', 'podPhotoUrl', 'failedAt', 'failedReason', 'failedPhotoUrl', 'sequenceNumber'])) ||
-        // Action: Reorganize
+        // Action: Reorganize (folder / group)
         (incoming().diff(existing()).affectedKeys().hasOnly(['folder', 'groupTag', 'sequenceNumber'])) ||
-        // Action: Edit Data
+        // Action: Edit parcel data
         (incoming().diff(existing()).affectedKeys().hasOnly(['recipientName', 'address', 'trackingNumber', 'isCOD', 'codAmount', 'lat', 'lng']))
       )) || isAdmin();
 
@@ -131,10 +135,15 @@ service cloud.firestore {
     match /folders/{folderId} {
       allow read: if isSignedIn() && existing().uid == request.auth.uid || isAdmin();
       allow list: if isSignedIn() && resource.data.uid == request.auth.uid;
-      
+
       allow create: if isSignedIn() && isSubscriptionActive() && isValidFolder(incoming()) && isValidId(folderId);
-      allow update: if (isSignedIn() && existing().uid == request.auth.uid && isValidId(folderId) && isValidFolder(incoming()) &&
-                      incoming().diff(existing()).affectedKeys().hasOnly(['name'])) || isAdmin();
+
+      allow update: if (isSignedIn() && existing().uid == request.auth.uid &&
+                        // Immutability: uid can never change
+                        incoming().uid == existing().uid &&
+                        isValidId(folderId) && isValidFolder(incoming()) &&
+                        incoming().diff(existing()).affectedKeys().hasOnly(['name'])) || isAdmin();
+
       allow delete: if (isSignedIn() && existing().uid == request.auth.uid) || isAdmin();
     }
 
@@ -144,22 +153,22 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
-    // Geocache (Shared Resource)
+    // Geocache (shared, read-heavy resource)
     match /geocache/{addressHash} {
       allow read: if isSignedIn();
-      allow create: if isSignedIn() && 
+      allow create: if isSignedIn() &&
                     incoming().keys().hasAll(['address', 'lat', 'lng']) &&
                     incoming().address is string && incoming().address.size() < 1000 &&
                     incoming().lat is number && incoming().lng is number;
       allow update, delete: if isAdmin();
     }
 
-    // User Private Verified Addresses
+    // Per-user verified addresses
     match /users/{userId}/verified_addresses/{addressHash} {
       allow read, write: if isOwner(userId) || isAdmin();
     }
 
-    // Pending Payments (System Only)
+    // Pending payments — Admin SDK only (no client access)
     match /pending_payments/{refNo} {
       allow read, write: if isAdmin();
     }

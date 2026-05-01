@@ -26,9 +26,10 @@ import firebaseConfig from '../firebase-applet-config.json';
 // Initialize Firebase SDK
 const app = initializeApp(firebaseConfig);
 
-// Improved Firestore initialization to handle potential proxy issues with custom domains
+// Auto-detect best transport (WebSocket or long polling) instead of forcing
+// long polling for all clients — improves latency on non-proxy environments.
 export const db = initializeFirestore(app, {
-  experimentalForceLongPolling: true,
+  experimentalAutoDetectLongPolling: true,
 }, firebaseConfig.firestoreDatabaseId);
 
 export const auth = getAuth(app);

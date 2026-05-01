@@ -315,8 +315,9 @@ export default function App() {
   const handleScan = async (data: { recipientName?: string; recipientPhone?: string; address: string; trackingNumber: string; isCOD?: boolean; codAmount?: number; groupTag?: string }) => {
     if (!user || !profile) return;
 
-    // Quota Check
-    const today = new Date().toISOString().split('T')[0];
+    // Quota Check — use Malaysia timezone (UTC+8) so day resets at midnight MYT
+    const myt = new Date(Date.now() + 8 * 60 * 60 * 1000);
+    const today = myt.toISOString().split('T')[0];
     const thisMonth = today.substring(0, 7); // YYYY-MM
 
     const isNewDay = profile.lastScanResetDate !== today;
@@ -343,7 +344,11 @@ export default function App() {
       return;
     }
 
-    let coords = await getCoordinates(data.address);
+    let coordsResult = await getCoordinates(data.address);
+    let coords = { lat: coordsResult.lat, lng: coordsResult.lng };
+    if (coordsResult.isApproximate) {
+      setError(`Alamat tidak dapat dijumpai secara tepat. Lokasi dianggarkan — sila pinda pin secara manual selepas menambah.`);
+    }
     let verifiedNotes = '';
     let isVerified = false;
 

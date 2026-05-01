@@ -1,25 +1,23 @@
 import { Parcel } from "../types";
 import { withRetry } from "./utils";
 
-// Cache to store previous optimization results
-const routeCache = new Map<string, Parcel[]>();
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
-/**
- * Generates a stable key for the current request context
- */
+interface CacheEntry {
+  result: Parcel[];
+  expiresAt: number;
+}
+
+const routeCache = new Map<string, CacheEntry>();
+
 function getRouteKey(parcels: Parcel[], startPoint: { lat: number; lng: number }): string {
-  // Use a coarse grid for start point to allow small movements to hit cache
+  // Coarse grid for start point so small movements still hit cache
   const coarseLat = Math.round(startPoint.lat * 1000) / 1000;
   const coarseLng = Math.round(startPoint.lng * 1000) / 1000;
-  
-  // Sort IDs to make key independent of current order
   const ids = parcels.map(p => p.id).sort().join(',');
   return `${coarseLat},${coarseLng}|${ids}`;
 }
 
-/**
- * Fallback: Simple Nearest Neighbor Algorithm (Straight-line distance)
- */
 function fallbackOptimizeRoute(parcels: Parcel[], startPoint: { lat: number; lng: number }): Parcel[] {
   const unvisited = [...parcels];
   const optimized: Parcel[] = [];
@@ -34,7 +32,7 @@ function fallbackOptimizeRoute(parcels: Parcel[], startPoint: { lat: number; lng
       if (!parcel.lat || !parcel.lng) continue;
 
       const dist = Math.sqrt(
-        Math.pow(parcel.lat - currentPos.lat, 2) + 
+        Math.pow(parcel.lat - currentPos.lat, 2) +
         Math.pow(parcel.lng - currentPos.lng, 2)
       );
 
@@ -49,86 +47,72 @@ function fallbackOptimizeRoute(parcels: Parcel[], startPoint: { lat: number; lng
     currentPos = { lat: nextParcel.lat!, lng: nextParcel.lng! };
   }
 
-  return optimized.map((p, index) => ({
-    ...p,
-    sequenceNumber: index + 1
-  }));
+  return optimized.map((p, index) => ({ ...p, sequenceNumber: index + 1 }));
 }
 
 /**
- * Advanced Route Optimization using OSRM (Open Source Routing Machine)
- * This calculates routes based on actual road networks, preventing zig-zags.
- * @param parcels List of parcels to optimize
- * @param startPoint Starting coordinates (e.g., current location)
- * @returns Optimized list of parcels
+ * Optimizes delivery route using OSRM (road network) with a nearest-neighbour
+ * fallback. Results are cached for 5 minutes to avoid redundant API calls.
  */
-export async function optimizeRoute(parcels: Parcel[], startPoint: { lat: number; lng: number }): Promise<Parcel[]> {
+export async function optimizeRoute(
+  parcels: Parcel[],
+  startPoint: { lat: number; lng: number }
+): Promise<Parcel[]> {
   if (parcels.length <= 1) return parcels;
 
   const cacheKey = getRouteKey(parcels, startPoint);
-  if (routeCache.has(cacheKey)) {
-    console.log("[Router] Using cached route optimization result");
-    return routeCache.get(cacheKey)!;
+  const cached = routeCache.get(cacheKey);
+  if (cached && Date.now() < cached.expiresAt) {
+    return cached.result;
   }
 
+  const setCache = (result: Parcel[]) => {
+    routeCache.set(cacheKey, { result, expiresAt: Date.now() + CACHE_TTL_MS });
+    return result;
+  };
+
   try {
-    // OSRM expects coordinates in longitude,latitude format
-    // We limit to ~100 coordinates to avoid URL length limits on public OSRM API
     if (parcels.length > 100) {
-      console.warn("Too many parcels for OSRM, falling back to straight-line");
-      const fallback = fallbackOptimizeRoute(parcels, startPoint);
-      routeCache.set(cacheKey, fallback);
-      return fallback;
+      return setCache(fallbackOptimizeRoute(parcels, startPoint));
     }
 
     const coords = [
       `${startPoint.lng},${startPoint.lat}`,
-      ...parcels.map(p => `${p.lng},${p.lat}`)
+      ...parcels.map(p => `${p.lng},${p.lat}`),
     ].join(';');
 
-    // Call OSRM Trip API with retry
     const data = await withRetry(async () => {
-      const response = await fetch(`https://router.project-osrm.org/trip/v1/driving/${coords}?source=first&roundtrip=false`);
-      
+      const response = await fetch(
+        `https://router.project-osrm.org/trip/v1/driving/${coords}?source=first&roundtrip=false`
+      );
+
       if (!response.ok) {
         const errorText = await response.text();
         throw new Error(`OSRM API failed (${response.status}): ${errorText}`);
       }
-      
+
       const json = await response.json();
-      
       if (json.code !== 'Ok' || !json.waypoints) {
         throw new Error(`Invalid OSRM response: ${json.code}`);
       }
-      
       return json;
     }, { maxRetries: 2, initialDelay: 2000 });
 
-    // Create an array to hold the sorted parcels
     const optimized: Parcel[] = new Array(parcels.length);
-    
-    // waypoints[0] is the startPoint.
-    // waypoints[1...n] are the parcels.
     for (let i = 1; i < data.waypoints.length; i++) {
       const wp = data.waypoints[i];
-      // wp.waypoint_index is the position in the optimized route (0-based, where 0 is startPoint)
-      const optimizedIndex = wp.waypoint_index - 1; 
+      const optimizedIndex = wp.waypoint_index - 1;
       optimized[optimizedIndex] = parcels[i - 1];
     }
 
-    // Filter out any undefined (just in case) and reassign sequence numbers
     const result = optimized.filter(Boolean).map((p, index) => ({
       ...p,
-      sequenceNumber: index + 1
+      sequenceNumber: index + 1,
     }));
 
-    routeCache.set(cacheKey, result);
-    return result;
-
+    return setCache(result);
   } catch (error) {
-    console.warn("OSRM routing failed, falling back to straight-line distance", error);
     const fallback = fallbackOptimizeRoute(parcels, startPoint);
-    routeCache.set(cacheKey, fallback);
-    return fallback;
+    return setCache(fallback);
   }
 }

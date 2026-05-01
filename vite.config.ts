@@ -20,20 +20,16 @@ export default defineConfig(({mode}) => {
   // 1. Get from process.env (AI Studio Secrets)
   // 2. Fallback to env (from .env files)
   let apiKey = process.env.CUSTOM_GEMINI_KEY || env.CUSTOM_GEMINI_KEY || process.env.GEMINI_API_KEY || env.GEMINI_API_KEY || "";
-  let googleMapsKey = process.env.GOOGLE_MAPS_API_KEY || env.GOOGLE_MAPS_API_KEY || process.env.VITE_GOOGLE_MAPS_API_KEY || env.VITE_GOOGLE_MAPS_API_KEY || "";
-  
-  // Strip out the placeholder
+
+  // Strip out placeholders
   if (apiKey === "MY_GEMINI_API_KEY" || apiKey === "undefined") {
     apiKey = "";
   }
 
-  if (googleMapsKey === "undefined") {
-    googleMapsKey = "";
-  }
-
   // Force expose to Vite's import.meta.env as a backup
   process.env.VITE_GEMINI_API_KEY = apiKey;
-  process.env.VITE_GOOGLE_MAPS_API_KEY = googleMapsKey;
+  // NOTE: GOOGLE_MAPS_API_KEY is intentionally NOT exposed to the frontend bundle.
+  // Geocoding requests are proxied through /api/geocode on the backend.
 
   return {
     plugins: [
@@ -105,8 +101,8 @@ export default defineConfig(({mode}) => {
       '__GEMINI_API_KEY__': JSON.stringify(apiKey),
       'process.env.GEMINI_API_KEY': JSON.stringify(apiKey),
       'import.meta.env.VITE_GEMINI_API_KEY': JSON.stringify(apiKey),
-      '__GOOGLE_MAPS_API_KEY__': JSON.stringify(googleMapsKey),
-      'import.meta.env.VITE_GOOGLE_MAPS_API_KEY': JSON.stringify(googleMapsKey),
+      // Google Maps key is NOT injected into the frontend bundle —
+      // geocoding is proxied via /api/geocode on the backend.
     },
     resolve: {
       alias: {

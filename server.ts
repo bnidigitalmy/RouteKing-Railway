@@ -1,4 +1,5 @@
 import express from "express";
+import type { Request, Response } from "express";
 import "dotenv/config";
 import { createServer as createViteServer } from "vite";
 import path from "path";
@@ -13,269 +14,328 @@ import fs from "fs";
 const firebaseConfigPath = path.join(process.cwd(), 'firebase-applet-config.json');
 const firebaseConfig = JSON.parse(fs.readFileSync(firebaseConfigPath, 'utf8'));
 
-// Initialize Firebase Admin
-// In AI Studio/Cloud Run, this uses the default service account
+// Initialize Firebase Admin (uses default service account on Cloud Run)
 const firebaseApp = admin.apps.length ? admin.app() : admin.initializeApp();
-
-// Use the specific database ID if provided
 const databaseId = firebaseConfig.firestoreDatabaseId || '(default)';
-console.log(`Initializing Firestore Admin with Database ID: ${databaseId}`);
 const db = getFirestore(firebaseApp, databaseId);
 
+// ---------------------------------------------------------------------------
+// Security configuration
+// ---------------------------------------------------------------------------
+
+// Domains allowed to make requests and receive redirects.
+// Set ALLOWED_DOMAINS env var as comma-separated list in production.
+const ALLOWED_DOMAINS: string[] = (
+  process.env.ALLOWED_DOMAINS || 'routeking.my,app.routeking.my,www.routeking.my'
+)
+  .split(',')
+  .map(d => d.trim().toLowerCase())
+  .filter(Boolean);
+
+const VALID_TIERS = new Set(['lite', 'standard', 'ultimate']);
+const VALID_TYPES = new Set(['monthly', 'yearly']);
+
+// Server-authoritative pricing (sen / RM × 100)
+const TIER_AMOUNTS: Record<string, number> = {
+  lite: 1490,
+  standard: 2990,
+  ultimate: 4990,
+};
+
+// ---------------------------------------------------------------------------
+// In-memory rate limiter — 5 payment requests per UID per hour
+// ---------------------------------------------------------------------------
+const rateLimitStore = new Map<string, { count: number; resetAt: number }>();
+
+function isRateLimited(uid: string, max = 5, windowMs = 60 * 60 * 1000): boolean {
+  const now = Date.now();
+  const entry = rateLimitStore.get(uid);
+  if (!entry || now > entry.resetAt) {
+    rateLimitStore.set(uid, { count: 1, resetAt: now + windowMs });
+    return false;
+  }
+  if (entry.count >= max) return true;
+  entry.count++;
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// CSRF / Origin validation
+// ---------------------------------------------------------------------------
+function isValidOrigin(req: Request): boolean {
+  if (process.env.NODE_ENV !== 'production') return true;
+  const origin = (req.get('origin') || '').toLowerCase();
+  const referer = (req.get('referer') || '').toLowerCase();
+  return ALLOWED_DOMAINS.some(d => origin.includes(d) || referer.includes(d));
+}
+
+// ---------------------------------------------------------------------------
+// Safe app URL — never derives host from untrusted request headers without
+// validating against the allowed-domains whitelist.
+// ---------------------------------------------------------------------------
+function getSafeAppUrl(req: Request): string {
+  const envUrl = process.env.APP_URL;
+  if (envUrl && !envUrl.includes('.run.app')) return envUrl;
+
+  // PUBLIC_URL is the preferred env var for Cloud Run with a custom domain
+  const publicUrl = process.env.PUBLIC_URL;
+  if (publicUrl) return publicUrl;
+
+  // Derive from request only when host is in the allowlist
+  const requestHost = (req.get('x-forwarded-host') || req.get('host') || '').split(':')[0].toLowerCase();
+  if (ALLOWED_DOMAINS.some(d => requestHost === d || requestHost.endsWith(`.${d}`))) {
+    const proto = req.get('x-forwarded-proto') || 'https';
+    return `${proto}://${req.get('x-forwarded-host') || req.get('host')}`;
+  }
+
+  return `http://localhost:${process.env.PORT || 3000}`;
+}
+
+// ---------------------------------------------------------------------------
+// Server bootstrap
+// ---------------------------------------------------------------------------
 async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT) || 3000;
 
-  app.use(cors());
+  // Security headers on every response
+  app.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader(
+      'Content-Security-Policy',
+      [
+        "default-src 'self'",
+        "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'",
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+        "font-src 'self' https://fonts.gstatic.com",
+        "img-src 'self' data: blob: https://*.tile.openstreetmap.org https://maps.googleapis.com https://maps.gstatic.com",
+        "connect-src 'self' https://firestore.googleapis.com wss://firestore.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://nominatim.openstreetmap.org https://router.project-osrm.org https://generativelanguage.googleapis.com https://toyyibpay.com https://dev.toyyibpay.com",
+        "frame-src 'none'",
+        "object-src 'none'",
+        "base-uri 'self'",
+      ].join('; ')
+    );
+    next();
+  });
+
+  const corsOrigins = process.env.NODE_ENV === 'production'
+    ? ALLOWED_DOMAINS.flatMap(d => [`https://${d}`, `http://${d}`])
+    : true;
+
+  app.use(cors({ origin: corsOrigins }));
   app.use(bodyParser.json());
   app.use(bodyParser.urlencoded({ extended: true }));
 
-  // ToyyibPay API Config
   const TOYYIBPAY_SECRET = process.env.TOYYIBPAY_SECRET_KEY;
   const TOYYIBPAY_CATEGORY = process.env.TOYYIBPAY_CATEGORY_CODE;
-  
-  console.log("ToyyibPay Config Check:", {
-    hasSecret: !!TOYYIBPAY_SECRET,
-    hasCategory: !!TOYYIBPAY_CATEGORY,
-    sandbox: process.env.TOYYIBPAY_SANDBOX,
-    secretPrefix: TOYYIBPAY_SECRET ? TOYYIBPAY_SECRET.substring(0, 5) + "..." : "none"
+  const TOYYIBPAY_BASE_URL = process.env.TOYYIBPAY_SANDBOX === 'true'
+    ? "https://dev.toyyibpay.com/index.php/api"
+    : "https://toyyibpay.com/index.php/api";
+
+  // -------------------------------------------------------------------------
+  // Google Maps Geocoding proxy — keeps the API key server-side only
+  // -------------------------------------------------------------------------
+  app.get("/api/geocode", async (req: Request, res: Response) => {
+    const { address } = req.query;
+    if (!address || typeof address !== 'string' || address.trim().length === 0) {
+      return res.status(400).json({ error: "Address required" });
+    }
+
+    const googleMapsKey = process.env.GOOGLE_MAPS_API_KEY;
+    if (!googleMapsKey) {
+      return res.status(503).json({ error: "Geocoding not configured" });
+    }
+
+    try {
+      const response = await axios.get<any>(
+        'https://maps.googleapis.com/maps/api/geocode/json',
+        {
+          params: { address: address.trim(), components: 'country:MY', key: googleMapsKey },
+          timeout: 8000,
+        }
+      );
+      const data = response.data;
+      if (data.status === 'OK' && data.results?.length > 0) {
+        const loc = data.results[0].geometry.location;
+        return res.json({ lat: loc.lat, lng: loc.lng });
+      }
+      return res.status(404).json({ error: "Address not found", status: data.status });
+    } catch {
+      return res.status(502).json({ error: "Geocoding request failed" });
+    }
   });
 
-  const TOYYIBPAY_BASE_URL = process.env.TOYYIBPAY_SANDBOX === 'true' 
-    ? "https://dev.toyyibpay.com/index.php/api" 
-    : "https://toyyibpay.com/index.php/api";
-  
-  const APP_URL = process.env.APP_URL || `http://localhost:${PORT}`;
+  // -------------------------------------------------------------------------
+  // 1. Create Payment Bill
+  // -------------------------------------------------------------------------
+  app.post("/api/payment/create", async (req: Request, res: Response) => {
+    if (!isValidOrigin(req)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
 
-  // 1. Create Bill
-  app.post("/api/payment/create", async (req, res) => {
     const { uid, email, name, phone, type, tier } = req.body;
-    
+
     if (!uid || !email || !type || !tier) {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
-    // Dynamically determine APP_URL if not set or if it's the default internal URL
-    let currentAppUrl = process.env.APP_URL;
-    const requestHost = req.get('x-forwarded-host') || req.get('host');
-    
-    // If APP_URL is missing OR it matches the internal Cloud Run URL format, 
-    // prioritize the host from the request headers
-    if (!currentAppUrl || currentAppUrl.includes('.run.app')) {
-      if (requestHost) {
-        const protocol = req.get('x-forwarded-proto') || req.protocol;
-        currentAppUrl = `${protocol}://${requestHost}`;
-      }
+    if (!VALID_TIERS.has(tier) || !VALID_TYPES.has(type)) {
+      return res.status(400).json({ error: "Invalid tier or subscription type" });
     }
 
-    let amount = 1490; // Default Lite
-    if (tier === 'standard') amount = 2990;
-    if (tier === 'ultimate') amount = 4990;
-
-    if (type === 'yearly') {
-      // Yearly discount (10 months price for 12 months)
-      amount = amount * 10;
+    if (isRateLimited(uid)) {
+      return res.status(429).json({ error: "Too many payment requests. Please wait before trying again." });
     }
 
-    const billName = `RK ${tier.toUpperCase()} ${type === 'monthly' ? 'Monthly' : 'Yearly'}`.substring(0, 30);
-    const billDescription = `Subscription for user ${uid}`;
+    if (!TOYYIBPAY_SECRET || !TOYYIBPAY_CATEGORY) {
+      return res.status(500).json({ error: "Payment gateway not configured." });
+    }
+
+    // Compute price server-side — never trust client-supplied amount
+    let amount = TIER_AMOUNTS[tier as string];
+    if (type === 'yearly') amount *= 10; // 10-month price for 12 months
+
+    const currentAppUrl = getSafeAppUrl(req);
+    const billName = `RK ${(tier as string).toUpperCase()} ${type === 'monthly' ? 'Monthly' : 'Yearly'}`.substring(0, 30);
+
+    const shortUid = (uid as string).substring(0, 8);
+    const typeCode = type === 'monthly' ? 'M' : 'Y';
+    const tierCode = tier === 'lite' ? 'L' : tier === 'standard' ? 'S' : 'U';
+    const refNo = `${shortUid}_${typeCode}_${tierCode}_${Math.floor(Date.now() / 1000)}`;
 
     try {
-      if (!TOYYIBPAY_SECRET || !TOYYIBPAY_CATEGORY) {
-        console.error("ToyyibPay configuration missing");
-        return res.status(500).json({ 
-          error: "Payment gateway not configured. Please set TOYYIBPAY_SECRET_KEY and TOYYIBPAY_CATEGORY_CODE in environment variables." 
-        });
-      }
+      // Store mapping BEFORE creating bill — this is the authoritative source for callback
+      await db.collection('pending_payments').doc(refNo).set({
+        uid, email, type, tier, amount,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
 
       const formData = new URLSearchParams();
       formData.append('userSecretKey', TOYYIBPAY_SECRET);
       formData.append('categoryCode', TOYYIBPAY_CATEGORY);
       formData.append('billName', billName);
-      formData.append('billDescription', billDescription);
+      formData.append('billDescription', 'RouteKing subscription');
       formData.append('billPriceSetting', '1');
       formData.append('billPayorInfo', '1');
       formData.append('billAmount', amount.toString());
-      formData.append('billReturnUrl', `${currentAppUrl}/api/payment/return?uid=${uid}&type=${type}&tier=${tier}`);
-      formData.append('billCallbackUrl', `${currentAppUrl}/api/payment/callback?uid=${uid}&type=${type}&tier=${tier}`);
-      
-      // Shorten ref no to avoid potential length limits (ToyyibPay limit is often 30-50 chars)
-      // Format: UID(8)_TYPE(1)_TIER(1)_TIMESTAMP(10)
-      const shortUid = uid.substring(0, 8);
-      const typeCode = type === 'monthly' ? 'M' : 'Y';
-      const tierCode = tier === 'lite' ? 'L' : tier === 'standard' ? 'S' : 'U';
-      const timestamp = Math.floor(Date.now() / 1000).toString();
-      const refNo = `${shortUid}_${typeCode}_${tierCode}_${timestamp}`;
-      
+      // Return/callback URLs carry only refNo — no uid/tier/type in query params
+      formData.append('billReturnUrl', `${currentAppUrl}/api/payment/return?refno=${refNo}`);
+      formData.append('billCallbackUrl', `${currentAppUrl}/api/payment/callback`);
       formData.append('billExternalReferenceNo', refNo);
-      formData.append('billTo', name || 'Rider');
-      formData.append('billEmail', email);
-      formData.append('billPhone', phone || '0123456789');
-
-      // Also store the full mapping in Firestore so we can recover the UID in callback
-      try {
-        await db.collection('pending_payments').doc(refNo).set({
-          uid,
-          email,
-          type,
-          tier,
-          amount,
-          createdAt: admin.firestore.FieldValue.serverTimestamp()
-        });
-        console.log(`Stored pending payment in Firestore: ${refNo}`);
-      } catch (fsError) {
-        console.error("Firestore Pending Payment Error (Admin SDK):", fsError);
-        // We continue anyway because we have query params as fallback
+      formData.append('billTo', (name as string) || 'Rider');
+      formData.append('billEmail', email as string);
+      // Only append phone if it looks valid
+      if (phone && /^[0-9+\s\-()‪-‬]{7,20}$/.test(String(phone))) {
+        formData.append('billPhone', String(phone));
       }
 
-      const response = await axios.post(`${TOYYIBPAY_BASE_URL}/createBill`, formData);
-      
-      if (response.data && response.data[0] && response.data[0].BillCode) {
+      const response = await axios.post<any>(`${TOYYIBPAY_BASE_URL}/createBill`, formData);
+
+      if (response.data?.[0]?.BillCode) {
         const billCode = response.data[0].BillCode;
         const paymentUrl = `${process.env.TOYYIBPAY_SANDBOX === 'true' ? 'https://dev.toyyibpay.com' : 'https://toyyibpay.com'}/${billCode}`;
-        res.json({ paymentUrl });
-      } else {
-        console.error("ToyyibPay Error Response:", JSON.stringify(response.data));
-        let errorMsg = "Failed to create bill";
-        if (Array.isArray(response.data) && response.data[0] && response.data[0].msg) {
-          errorMsg = response.data[0].msg;
-        } else if (typeof response.data === 'string') {
-          errorMsg = response.data;
-        }
-        
-        res.status(500).json({ error: errorMsg, details: response.data });
+        return res.json({ paymentUrl });
       }
+
+      const errorMsg = response.data?.[0]?.msg || "Failed to create bill";
+      return res.status(500).json({ error: errorMsg });
     } catch (error) {
       if (axios.isAxiosError(error)) {
-        console.error("ToyyibPay API Error:", error.response?.data || error.message);
-        return res.status(500).json({ 
-          error: "ToyyibPay API Connection Error", 
-          details: error.response?.data || error.message 
-        });
+        return res.status(500).json({ error: "Payment gateway connection error" });
       }
-      console.error("Payment Creation Error:", error);
-      res.status(500).json({ error: "Internal server error", details: error instanceof Error ? error.message : String(error) });
+      return res.status(500).json({ error: "Internal server error" });
     }
   });
 
-  // 2. Callback (Webhook)
-  app.post("/api/payment/callback", async (req, res) => {
-    const { refno, status, reason, billcode, order_id } = req.body;
-    // Fallback info from query params if Firestore lookup fails
-    const { uid: qUid, type: qType, tier: qTier } = req.query;
-    
-    console.log("ToyyibPay Callback Received:", { refno, status, reason, billcode, qUid });
+  // -------------------------------------------------------------------------
+  // 2. Payment Callback (Webhook from ToyyibPay — POST from ToyyibPay servers)
+  // -------------------------------------------------------------------------
+  app.post("/api/payment/callback", async (req: Request, res: Response) => {
+    const { refno, status, billcode } = req.body;
 
-    // ToyyibPay status: 1 = Success, 2 = Pending, 3 = Failed
-    if (status === '1' && (refno || qUid)) {
-      try {
-        let uid = qUid as string;
-        let type = qType as string;
-        let tier = qTier as string;
+    // ToyyibPay status 1 = success
+    if (status !== '1' || !refno) {
+      return res.send("OK");
+    }
 
-        // Try to look up the full info from pending_payments if we don't have it from query
-        if (!uid && refno) {
-          try {
-            const pendingDoc = await db.collection('pending_payments').doc(refno).get();
-            if (pendingDoc.exists) {
-              const data = pendingDoc.data();
-              uid = data?.uid;
-              type = data?.type;
-              tier = data?.tier;
-            }
-          } catch (fsLookupError) {
-            console.error("Firestore Lookup Error in Callback:", fsLookupError);
-          }
-        }
-        
-        // Final fallback to parsing refno
-        if (!uid && refno) {
-          const parts = refno.split('_');
-          uid = parts[0];
-          type = parts[1] === 'M' ? 'monthly' : 'yearly';
-          tier = parts[2] === 'L' ? 'lite' : parts[2] === 'S' ? 'standard' : 'ultimate';
-        }
-
-        if (!uid) {
-          console.error("Could not determine UID for payment:", refno);
-          return res.send("OK");
-        }
-      
-        const now = Date.now();
-        let expiryDate = now;
-
-        if (type === 'yearly') {
-          // 1 year + 1 day buffer
-          expiryDate = now + (366 * 24 * 60 * 60 * 1000);
-        } else {
-          // 30 days + 1 day buffer
-          expiryDate = now + (31 * 24 * 60 * 60 * 1000);
-        }
-
-        // Update Firestore using Admin SDK
-        try {
-          await db.collection('profiles').doc(uid).set({
-            isPro: true,
-            subscriptionTier: tier || 'lite',
-            expiryDate: expiryDate,
-            lastPaymentDate: now,
-            lastBillCode: billcode,
-            subscriptionType: type || 'monthly',
-            updatedAt: now
-          }, { merge: true });
-          
-          console.log(`Successfully updated subscription for user ${uid} (${tier} - ${type})`);
-        } catch (fsUpdateError) {
-          console.error("Firestore Profile Update Error (Admin SDK):", fsUpdateError);
-        }
-      } catch (error) {
-        console.error("General Callback Error:", error);
+    try {
+      // Trust ONLY the pending_payments document — never query params
+      const pendingDoc = await db.collection('pending_payments').doc(refno as string).get();
+      if (!pendingDoc.exists) {
+        return res.send("OK");
       }
+
+      const { uid, type, tier } = pendingDoc.data()!;
+      const now = Date.now();
+      const expiryDate = type === 'yearly'
+        ? now + 366 * 24 * 60 * 60 * 1000
+        : now + 31 * 24 * 60 * 60 * 1000;
+
+      await db.collection('profiles').doc(uid).set({
+        isPro: true,
+        subscriptionTier: tier,
+        expiryDate,
+        lastPaymentDate: now,
+        lastBillCode: billcode || null,
+        subscriptionType: type,
+        updatedAt: now,
+      }, { merge: true });
+
+      // Remove pending record after successful activation
+      await db.collection('pending_payments').doc(refno as string).delete();
+    } catch (error) {
+      console.error("Callback error:", error instanceof Error ? error.message : 'unknown');
     }
 
     res.send("OK");
   });
 
-  // 3. Return URL
-  app.get("/api/payment/return", async (req, res) => {
-    const { status, billcode, uid, type, tier } = req.query;
-    
-    if (status === '1' && uid && type) {
-      // Instant activation on return
-      const now = Date.now();
-      let expiryDate = now;
+  // -------------------------------------------------------------------------
+  // 3. Payment Return URL (browser redirect after payment)
+  // -------------------------------------------------------------------------
+  app.get("/api/payment/return", async (req: Request, res: Response) => {
+    const { status, billcode, refno } = req.query;
 
-      if (type === 'yearly') {
-        expiryDate = now + (366 * 24 * 60 * 60 * 1000);
-      } else {
-        expiryDate = now + (31 * 24 * 60 * 60 * 1000);
-      }
-
+    if (status === '1' && refno) {
       try {
-        await db.collection('profiles').doc(uid as string).set({
-          isPro: true,
-          subscriptionTier: tier || 'lite',
-          expiryDate: expiryDate,
-          lastPaymentDate: now,
-          lastBillCode: billcode as string,
-          subscriptionType: type as string,
-          updatedAt: now
-        }, { merge: true });
-        console.log(`Instant activation for user ${uid} on return (Admin SDK)`);
-      } catch (fsError) {
-        console.error("Firestore Return Update Error (Admin SDK):", fsError);
+        const pendingDoc = await db.collection('pending_payments').doc(refno as string).get();
+        if (pendingDoc.exists) {
+          const { uid, type, tier } = pendingDoc.data()!;
+          const now = Date.now();
+          const expiryDate = type === 'yearly'
+            ? now + 366 * 24 * 60 * 60 * 1000
+            : now + 31 * 24 * 60 * 60 * 1000;
+
+          await db.collection('profiles').doc(uid).set({
+            isPro: true,
+            subscriptionTier: tier,
+            expiryDate,
+            lastPaymentDate: now,
+            lastBillCode: (billcode as string) || null,
+            subscriptionType: type,
+            updatedAt: now,
+          }, { merge: true });
+
+          await db.collection('pending_payments').doc(refno as string).delete();
+        }
+      } catch (error) {
+        console.error("Return activation error:", error instanceof Error ? error.message : 'unknown');
       }
-      
-      res.redirect('/?payment=success');
-    } else if (status === '1') {
-      // Fallback if uid/type missing
-      res.redirect('/?payment=success');
-    } else {
-      res.redirect('/?payment=failed');
     }
+
+    // Always redirect to a fixed path — no open redirect possible
+    if (status === '1') {
+      return res.redirect('/?payment=success');
+    }
+    return res.redirect('/?payment=failed');
   });
 
-  // Vite middleware for development
+  // -------------------------------------------------------------------------
+  // Vite middleware (dev) / static files (prod)
+  // -------------------------------------------------------------------------
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -285,7 +345,7 @@ async function startServer() {
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    app.get('*', (req, res) => {
+    app.get('*', (_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
