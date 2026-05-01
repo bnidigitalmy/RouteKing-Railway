@@ -1,0 +1,62 @@
+steps:
+  # Step 1: Build Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build'
+    args:
+      - 'build'
+      - '-t'
+      - 'us-west1-docker.pkg.dev/$PROJECT_ID/routeking/app:$SHORT_SHA'
+      - '-t'
+      - 'us-west1-docker.pkg.dev/$PROJECT_ID/routeking/app:latest'
+      - '--build-arg'
+      - 'GEMINI_API_KEY=$_GEMINI_API_KEY'
+      - '--build-arg'
+      - 'CUSTOM_GEMINI_KEY=$_GEMINI_API_KEY'
+      - '.'
+
+  # Step 2: Push image to Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'push'
+    args:
+      - 'push'
+      - '--all-tags'
+      - 'us-west1-docker.pkg.dev/$PROJECT_ID/routeking/app'
+
+  # Step 3: Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'deploy'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'routeking-courier-edition'
+      - '--image=us-west1-docker.pkg.dev/$PROJECT_ID/routeking/app:$SHORT_SHA'
+      - '--region=us-west1'
+      - '--platform=managed'
+      - '--allow-unauthenticated'
+      - '--memory=512Mi'
+      - '--min-instances=0'
+      - '--max-instances=10'
+      - '--concurrency=80'
+      - >-
+        --update-env-vars=NODE_ENV=production,GEMINI_API_KEY=$_GEMINI_API_KEY,CUSTOM_GEMINI_KEY=$_GEMINI_API_KEY,GOOGLE_MAPS_API_KEY=$_GOOGLE_MAPS_API_KEY,TOYYIBPAY_SECRET_KEY=$_TOYYIBPAY_SECRET_KEY,TOYYIBPAY_CATEGORY_CODE=$_TOYYIBPAY_CATEGORY_CODE,TOYYIBPAY_SANDBOX=$_TOYYIBPAY_SANDBOX,APP_URL=$_APP_URL,PUBLIC_URL=$_APP_URL,ALLOWED_DOMAINS=$_ALLOWED_DOMAINS
+
+images:
+  - 'us-west1-docker.pkg.dev/$PROJECT_ID/routeking/app:$SHORT_SHA'
+  - 'us-west1-docker.pkg.dev/$PROJECT_ID/routeking/app:latest'
+
+# Default substitution values (overridden in trigger config)
+substitutions:
+  _GEMINI_API_KEY: ''
+  _GOOGLE_MAPS_API_KEY: ''
+  _TOYYIBPAY_SECRET_KEY: ''
+  _TOYYIBPAY_CATEGORY_CODE: ''
+  _TOYYIBPAY_SANDBOX: 'false'
+  _APP_URL: 'https://app.routeking.my'
+  _ALLOWED_DOMAINS: 'routeking.my,app.routeking.my,www.routeking.my'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: 'E2_HIGHCPU_8'
+
+timeout: '1200s'
