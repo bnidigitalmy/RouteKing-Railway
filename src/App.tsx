@@ -53,6 +53,8 @@ const TIER_LIMITS = {
   ultimate: { daily: 400, monthly: 10000 }
 };
 
+const TRIAL_SCAN_LIMIT = 50;
+
 const MAIN_DOMAIN = 'routeking.my';
 
 export default function App() {
@@ -258,27 +260,24 @@ export default function App() {
         setRiderName(data.riderName);
         setCourierCompany(data.courierCompany);
         setRatePerParcel(data.ratePerParcel ? String(data.ratePerParcel) : '');
-        setIsAdmin(data.role === 'admin' || user.email === 'bnidigital.my@gmail.com');
+        setIsAdmin(data.role === 'admin');
 
         // Check subscription status
         const now = Date.now();
-        const trialDays = 7;
-        const trialMs = trialDays * 24 * 60 * 60 * 1000;
-        
-        // If trialStartedAt is missing (old user), initialize it
-        if (!data.trialStartedAt) {
-          updateDoc(doc(db, 'profiles', user.uid), { 
-            trialStartedAt: now,
-            isPro: data.isPro || false 
-          });
-          return;
-        }
 
-        const testers = ['syabanizainon83@gmail.com', 'bniresources2@gmail.com'];
-        const isTester = testers.includes(user.email || '');
-        const trialExpired = (now - data.trialStartedAt > trialMs) || isTester;
-        const subscriptionActive = data.isPro && data.expiryDate && now < data.expiryDate;
-        
+        // New: scan-based trial (trialScansUsed is defined)
+        const isOnScanTrial = data.trialScansUsed !== undefined;
+        const scanTrialActive = isOnScanTrial && (data.trialScansUsed! < TRIAL_SCAN_LIMIT);
+
+        // Legacy: time-based 7-day trial (users created before scan-based trial)
+        const legacyTrialActive = !isOnScanTrial && data.trialStartedAt
+          ? (now - data.trialStartedAt <= 7 * 24 * 60 * 60 * 1000)
+          : false;
+
+        const trialActive = scanTrialActive || legacyTrialActive;
+        const subscriptionActive = !!(data.isPro && data.expiryDate && now < data.expiryDate);
+        const trialExpired = !trialActive && !subscriptionActive;
+
         setIsTrialExpired(trialExpired);
 
         if (!subscriptionActive && (trialExpired || paymentFailed)) {
@@ -314,6 +313,17 @@ export default function App() {
 
   const handleScan = async (data: { recipientName?: string; recipientPhone?: string; address: string; trackingNumber: string; isCOD?: boolean; codAmount?: number; groupTag?: string }) => {
     if (!user || !profile) return;
+
+    // Trial scan limit check (scan-based trial users only)
+    if (profile.trialScansUsed !== undefined && !profile.isPro) {
+      const scansUsed = profile.trialScansUsed;
+      if (scansUsed >= TRIAL_SCAN_LIMIT) {
+        setIsScannerOpen(false);
+        setError(`Had scan percubaan telah habis (${scansUsed}/${TRIAL_SCAN_LIMIT}). Langgan RouteKing Pro untuk terus scan!`);
+        setIsSubscriptionModalOpen(true);
+        return;
+      }
+    }
 
     // Quota Check — use Malaysia timezone (UTC+8) so day resets at midnight MYT
     const myt = new Date(Date.now() + 8 * 60 * 60 * 1000);
@@ -415,13 +425,18 @@ export default function App() {
     try {
       await setDoc(doc(db, 'parcels', parcelId), parcelData, { merge: true });
       
-      // Update scan count
-      await updateDoc(doc(db, 'profiles', user.uid), {
+      // Update scan counts
+      const scanCountUpdate: Record<string, number | string> = {
         dailyScanCount: currentDailyCount + 1,
         lastScanResetDate: today,
         monthlyScanCount: currentMonthlyCount + 1,
-        lastScanResetMonth: thisMonth
-      });
+        lastScanResetMonth: thisMonth,
+      };
+      // Increment trial scan counter (scan-based trial only, can never decrease)
+      if (profile.trialScansUsed !== undefined && !profile.isPro) {
+        scanCountUpdate.trialScansUsed = (profile.trialScansUsed || 0) + 1;
+      }
+      await updateDoc(doc(db, 'profiles', user.uid), scanCountUpdate);
 
       setIsScannerOpen(false);
       setError(null);
@@ -704,9 +719,9 @@ export default function App() {
         ratePerParcel: parseFloat(ratePerParcel) || 0
       };
 
-      // Initialize trial for brand new profiles
+      // Initialize scan-based trial for brand new profiles
       if (!profile) {
-        profileData.trialStartedAt = Date.now();
+        profileData.trialScansUsed = 0;
         profileData.isPro = false;
       }
 
@@ -1076,6 +1091,23 @@ export default function App() {
               </button>
             </div>
           </div>
+
+          {/* Trial scan warning banner */}
+          {profile && !profile.isPro && profile.trialScansUsed !== undefined &&
+           profile.trialScansUsed >= 40 && profile.trialScansUsed < TRIAL_SCAN_LIMIT && (
+            <button
+              onClick={() => setIsSubscriptionModalOpen(true)}
+              className="w-full bg-orange-500 hover:bg-orange-600 active:scale-95 text-white rounded-2xl px-4 py-3 flex items-center justify-between transition-all shadow-lg shadow-orange-200"
+            >
+              <div className="flex items-center gap-2">
+                <Zap size={16} className="shrink-0" />
+                <span className="text-xs font-black">
+                  Tinggal {TRIAL_SCAN_LIMIT - profile.trialScansUsed} scan percubaan sahaja!
+                </span>
+              </div>
+              <span className="text-xs font-black uppercase tracking-wider">Upgrade →</span>
+            </button>
+          )}
 
           {/* Earnings & Stats Card */}
           <div className="bg-white rounded-3xl p-5 shadow-2xl border border-blue-100 flex items-center justify-between">
@@ -2059,12 +2091,28 @@ export default function App() {
                             <span className="text-xs font-bold text-gray-700">{new Date(profile.expiryDate).toLocaleDateString('ms-MY')}</span>
                           </div>
                         )}
-                        {!profile.isPro && profile.trialStartedAt && (
-                          <div className="flex justify-between items-center">
-                            <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Trial Tamat</span>
-                            <span className="text-xs font-bold text-gray-700">
-                              {new Date(profile.trialStartedAt + 7 * 24 * 60 * 60 * 1000).toLocaleDateString('ms-MY')}
-                            </span>
+                        {!profile.isPro && profile.trialScansUsed !== undefined && (
+                          <div className="space-y-1">
+                            <div className="flex justify-between items-center">
+                              <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Trial Scan</span>
+                              <span className={cn(
+                                "text-xs font-black",
+                                profile.trialScansUsed >= TRIAL_SCAN_LIMIT ? "text-red-600" :
+                                profile.trialScansUsed >= 40 ? "text-orange-500" : "text-blue-600"
+                              )}>
+                                {profile.trialScansUsed} / {TRIAL_SCAN_LIMIT}
+                              </span>
+                            </div>
+                            <div className="w-full bg-gray-100 rounded-full h-1.5">
+                              <div
+                                className={cn(
+                                  "h-1.5 rounded-full transition-all",
+                                  profile.trialScansUsed >= TRIAL_SCAN_LIMIT ? "bg-red-500" :
+                                  profile.trialScansUsed >= 40 ? "bg-orange-400" : "bg-blue-500"
+                                )}
+                                style={{ width: `${Math.min(100, (profile.trialScansUsed / TRIAL_SCAN_LIMIT) * 100)}%` }}
+                              />
+                            </div>
                           </div>
                         )}
                         <div className="pt-3 border-t border-gray-100 space-y-2">
@@ -2263,12 +2311,14 @@ export default function App() {
                   
                   <div className="space-y-2">
                     <h3 className="font-black text-2xl text-gray-900 tracking-tight">
-                      {paymentFailed ? "Pembayaran Tidak Berjaya" : "Masa Percubaan Tamat"}
+                      {paymentFailed ? "Pembayaran Tidak Berjaya" : "Had Scan Percubaan Tamat"}
                     </h3>
                     <p className="text-gray-600 leading-relaxed">
-                      {paymentFailed 
+                      {paymentFailed
                         ? "Maaf, pembayaran anda tidak berjaya atau telah dibatalkan. Sila cuba lagi untuk mengaktifkan akaun Pro anda."
-                        : "Tempoh percubaan 7 hari anda telah tamat. Langgan sekarang untuk terus menggunakan RouteKing."}
+                        : profile?.trialScansUsed !== undefined
+                          ? `Anda telah menggunakan kesemua ${TRIAL_SCAN_LIMIT} scan percubaan. Langgan sekarang untuk terus menggunakan RouteKing tanpa had!`
+                          : "Tempoh percubaan anda telah tamat. Langgan sekarang untuk terus menggunakan RouteKing."}
                     </p>
                   </div>
 

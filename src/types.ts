@@ -40,6 +40,7 @@ export interface UserProfile {
   lastScanResetDate?: string; // ISO date string YYYY-MM-DD
   monthlyScanCount?: number;
   lastScanResetMonth?: string; // ISO date string YYYY-MM
+  trialScansUsed?: number; // scan-based trial counter (new users); undefined = legacy time-based trial
   hasSeenOnboarding?: boolean;
 }
 

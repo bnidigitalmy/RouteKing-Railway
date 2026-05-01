@@ -29,11 +29,18 @@ service cloud.firestore {
     function isSubscriptionActive() {
       let profile = get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data;
       let now = request.time.toMillis();
+
+      // New: scan-based trial — trialScansUsed present and below limit
+      let trialScansUsed = profile.get('trialScansUsed', -1);
+      let scanTrialActive = trialScansUsed >= 0 && trialScansUsed < 50;
+
+      // Legacy: time-based 7-day trial (for users created before scan-based trial)
       let trialDuration = 7 * 24 * 60 * 60 * 1000;
       let trialStartedAt = profile.get('trialStartedAt', 0);
-      let trialActive = trialStartedAt > 0 && (now - trialStartedAt) <= trialDuration;
+      let legacyTrialActive = trialStartedAt > 0 && (now - trialStartedAt) <= trialDuration;
+
       let subActive = profile.get('isPro', false) == true && profile.get('expiryDate', 0) > now;
-      return trialActive || subActive || isAdmin();
+      return scanTrialActive || legacyTrialActive || subActive || isAdmin();
     }
 
     // ===============================================================
@@ -103,7 +110,10 @@ service cloud.firestore {
         // Trial claim — only allowed once (existing trialStartedAt must be 0/absent)
         (incoming().diff(existing()).affectedKeys().hasOnly(['trialStartedAt']) &&
          existing().get('trialStartedAt', 0) == 0 &&
-         incoming().trialStartedAt >= (request.time.toMillis() - 60000))
+         incoming().trialStartedAt >= (request.time.toMillis() - 60000)) ||
+        // Scan count update — trialScansUsed can only increment (never decrease)
+        (incoming().diff(existing()).affectedKeys().hasOnly(['dailyScanCount', 'lastScanResetDate', 'monthlyScanCount', 'lastScanResetMonth', 'trialScansUsed']) &&
+         incoming().get('trialScansUsed', existing().get('trialScansUsed', 0)) >= existing().get('trialScansUsed', 0))
       )) || isAdmin();
       // Subscription fields (isPro, expiryDate, subscriptionTier, etc.) are
       // only writable by the server via the Admin SDK — no client rule permits them.
