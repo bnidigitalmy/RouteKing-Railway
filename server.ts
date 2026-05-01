@@ -108,12 +108,12 @@ async function startServer() {
       'Content-Security-Policy',
       [
         "default-src 'self'",
-        "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://apis.google.com https://accounts.google.com",
-        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com",
+        "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://apis.google.com https://accounts.google.com https://www.gstatic.com https://www.google.com",
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com https://www.gstatic.com",
         "font-src 'self' https://fonts.gstatic.com",
-        "img-src 'self' data: blob: https://*.tile.openstreetmap.org https://maps.googleapis.com https://maps.gstatic.com https://lh3.googleusercontent.com",
-        "connect-src 'self' https://apis.google.com https://firebase.googleapis.com https://firebaseinstallations.googleapis.com https://firestore.googleapis.com wss://firestore.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://nominatim.openstreetmap.org https://router.project-osrm.org https://generativelanguage.googleapis.com https://toyyibpay.com https://dev.toyyibpay.com",
-        "frame-src https://accounts.google.com https://gen-lang-client-0580807845.firebaseapp.com",
+        "img-src 'self' data: blob: https://*.tile.openstreetmap.org https://maps.googleapis.com https://maps.gstatic.com https://lh3.googleusercontent.com https://www.gstatic.com",
+        "connect-src 'self' https://apis.google.com https://www.google.com https://firebase.googleapis.com https://firebaseinstallations.googleapis.com https://firestore.googleapis.com wss://firestore.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://recaptchaenterprise.googleapis.com https://nominatim.openstreetmap.org https://router.project-osrm.org https://generativelanguage.googleapis.com https://toyyibpay.com https://dev.toyyibpay.com",
+        "frame-src https://accounts.google.com https://gen-lang-client-0580807845.firebaseapp.com https://www.google.com",
         "object-src 'none'",
         "base-uri 'self'",
       ].join('; ')
