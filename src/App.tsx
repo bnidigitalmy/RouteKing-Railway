@@ -23,11 +23,12 @@ import { cn, hapticFeedback } from './lib/utils';
 import confetti from 'canvas-confetti';
 import { motion, AnimatePresence } from 'motion/react';
 import { ConfirmationModal } from './components/ui/ConfirmationModal';
-import { 
-  auth, 
-  db, 
-  signInWithGoogle, 
-  logout, 
+import {
+  auth,
+  db,
+  signInWithGoogle,
+  getRedirectResult,
+  logout,
   collection, 
   doc, 
   setDoc, 
@@ -132,6 +133,12 @@ export default function App() {
 
   // Auth Listener
   useEffect(() => {
+    // Surface any error from a prior signInWithRedirect flow.
+    getRedirectResult(auth).catch((err) => {
+      console.error('Redirect sign-in error:', err);
+      setError(`Ralat log masuk: ${err.message}`);
+    });
+
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
       if (currentUser && !riderName) {

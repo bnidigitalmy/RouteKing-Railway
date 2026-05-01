@@ -1,5 +1,5 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, User } from 'firebase/auth';
+import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, signOut, onAuthStateChanged, User } from 'firebase/auth';
 import {
   initializeFirestore,
   collection,
@@ -32,13 +32,30 @@ export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 
 // Auth functions
+// Try popup first (better UX on desktop). If popup is blocked or unavailable
+// (mobile, PWA standalone, browser policy), fall back to redirect which works
+// reliably across all environments.
 export const signInWithGoogle = async () => {
   const provider = new GoogleAuthProvider();
-  // Force account selection to help with session issues
   provider.setCustomParameters({ prompt: 'select_account' });
-  return signInWithPopup(auth, provider);
+  try {
+    return await signInWithPopup(auth, provider);
+  } catch (err: any) {
+    const fallbackCodes = [
+      'auth/popup-blocked',
+      'auth/popup-closed-by-user',
+      'auth/operation-not-supported-in-this-environment',
+      'auth/unauthorized-domain',
+    ];
+    if (fallbackCodes.includes(err?.code)) {
+      await signInWithRedirect(auth, provider);
+      return;
+    }
+    throw err;
+  }
 };
 export const logout = () => signOut(auth);
+export { getRedirectResult };
 
 export type { User };
 export enum OperationType {
