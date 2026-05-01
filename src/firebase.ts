@@ -1,23 +1,21 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, User } from 'firebase/auth';
-import { 
-  getFirestore, 
+import {
   initializeFirestore,
-  collection, 
-  doc, 
-  setDoc, 
-  getDoc, 
-  getDocs, 
-  updateDoc, 
-  deleteDoc, 
-  query, 
-  where, 
-  onSnapshot, 
-  orderBy, 
-  limit, 
-  serverTimestamp, 
-  getDocFromServer, 
-  addDoc 
+  collection,
+  doc,
+  setDoc,
+  getDoc,
+  getDocs,
+  updateDoc,
+  deleteDoc,
+  query,
+  where,
+  onSnapshot,
+  orderBy,
+  limit,
+  serverTimestamp,
+  addDoc
 } from 'firebase/firestore';
 
 // Import the Firebase configuration
@@ -41,18 +39,6 @@ export const signInWithGoogle = async () => {
   return signInWithPopup(auth, provider);
 };
 export const logout = () => signOut(auth);
-
-// Test connection to Firestore
-async function testConnection() {
-  try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
-  } catch (error) {
-    if(error instanceof Error && error.message.includes('the client is offline')) {
-      console.error("Please check your Firebase configuration. The client is offline.");
-    }
-  }
-}
-testConnection();
 
 export type { User };
 export enum OperationType {
