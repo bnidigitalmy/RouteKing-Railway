@@ -254,16 +254,18 @@ async function startServer() {
   // 2. Payment Callback (Webhook from ToyyibPay — POST from ToyyibPay servers)
   // -------------------------------------------------------------------------
   app.post("/api/payment/callback", async (req: Request, res: Response) => {
-    const { refno, status, billcode } = req.body;
+    const { order_id, refno, status, billcode } = req.body;
 
     // ToyyibPay status 1 = success
-    if (status !== '1' || !refno) {
+    // order_id = our billExternalReferenceNo; refno = ToyyibPay's internal ref (fallback)
+    const ourRef = (order_id || refno) as string | undefined;
+    if (status !== '1' || !ourRef) {
       return res.send("OK");
     }
 
     try {
       // Trust ONLY the pending_payments document — never query params
-      const pendingDoc = await db.collection('pending_payments').doc(refno as string).get();
+      const pendingDoc = await db.collection('pending_payments').doc(ourRef).get();
       if (!pendingDoc.exists) {
         return res.send("OK");
       }
@@ -285,7 +287,7 @@ async function startServer() {
       }, { merge: true });
 
       // Remove pending record after successful activation
-      await db.collection('pending_payments').doc(refno as string).delete();
+      await db.collection('pending_payments').doc(ourRef).delete();
     } catch (error) {
       console.error("Callback error:", error instanceof Error ? error.message : 'unknown');
     }
@@ -297,11 +299,17 @@ async function startServer() {
   // 3. Payment Return URL (browser redirect after payment)
   // -------------------------------------------------------------------------
   app.get("/api/payment/return", async (req: Request, res: Response) => {
-    const { status, billcode, refno } = req.query;
+    const { status, billcode, refno, order_id } = req.query;
 
-    if (status === '1' && refno) {
+    // refno is pre-set by us in the return URL; order_id may be appended by ToyyibPay
+    // Use the first non-array, non-empty value
+    const rawRef = Array.isArray(refno) ? refno[0] : refno;
+    const rawOrderId = Array.isArray(order_id) ? order_id[0] : order_id;
+    const ourRef = (rawRef || rawOrderId) as string | undefined;
+
+    if (status === '1' && ourRef) {
       try {
-        const pendingDoc = await db.collection('pending_payments').doc(refno as string).get();
+        const pendingDoc = await db.collection('pending_payments').doc(ourRef).get();
         if (pendingDoc.exists) {
           const { uid, type, tier } = pendingDoc.data()!;
           const now = Date.now();
@@ -319,7 +327,7 @@ async function startServer() {
             updatedAt: now,
           }, { merge: true });
 
-          await db.collection('pending_payments').doc(refno as string).delete();
+          await db.collection('pending_payments').doc(ourRef).delete();
         }
       } catch (error) {
         console.error("Return activation error:", error instanceof Error ? error.message : 'unknown');
