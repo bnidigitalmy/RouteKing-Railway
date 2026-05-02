@@ -1,5 +1,5 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, signOut, onAuthStateChanged, User } from 'firebase/auth';
+import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, User } from 'firebase/auth';
 import {
   initializeFirestore,
   collection,
@@ -32,30 +32,17 @@ export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 
 // Auth functions
-// Try popup first (better UX on desktop). If popup is blocked or unavailable
-// (mobile, PWA standalone, browser policy), fall back to redirect which works
-// reliably across all environments.
+// Popup-only sign-in. signInWithRedirect is intentionally NOT used because:
+// - authDomain (firebaseapp.com) != serving domain (app.routeking.my)
+// - Firebase v10+ stores redirect state in IndexedDB on authDomain origin
+// - Cross-origin IndexedDB access is blocked by browsers → getRedirectResult returns null
+// - PWA service worker with navigateFallback also interferes with redirect callbacks
 export const signInWithGoogle = async () => {
   const provider = new GoogleAuthProvider();
   provider.setCustomParameters({ prompt: 'select_account' });
-  try {
-    return await signInWithPopup(auth, provider);
-  } catch (err: any) {
-    const fallbackCodes = [
-      'auth/popup-blocked',
-      'auth/popup-closed-by-user',
-      'auth/operation-not-supported-in-this-environment',
-      'auth/unauthorized-domain',
-    ];
-    if (fallbackCodes.includes(err?.code)) {
-      await signInWithRedirect(auth, provider);
-      return;
-    }
-    throw err;
-  }
+  return await signInWithPopup(auth, provider);
 };
 export const logout = () => signOut(auth);
-export { getRedirectResult };
 
 export type { User };
 export enum OperationType {

@@ -27,7 +27,6 @@ import {
   auth,
   db,
   signInWithGoogle,
-  getRedirectResult,
   logout,
   collection, 
   doc, 
@@ -133,12 +132,6 @@ export default function App() {
 
   // Auth Listener
   useEffect(() => {
-    // Surface any error from a prior signInWithRedirect flow.
-    getRedirectResult(auth).catch((err) => {
-      console.error('Redirect sign-in error:', err);
-      setError(`Ralat log masuk: ${err.message}`);
-    });
-
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
       if (currentUser && !riderName) {
