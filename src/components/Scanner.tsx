@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
-import { Camera, Upload, Loader2, X, Banknote, MapPin, Hash, CheckCircle, User as UserIcon, Folder, Edit2, Search, RefreshCw, Phone, Zap, ZapOff, Image as ImageIcon } from 'lucide-react';
+import { Camera, Upload, Loader2, X, Banknote, MapPin, Hash, CheckCircle, User as UserIcon, Folder, Edit2, RefreshCw, Phone, Zap, ZapOff, Image as ImageIcon, Trash2, Play, RotateCcw, Layers } from 'lucide-react';
 import { extractParcelInfo } from '../lib/gemini';
 import { cn, hapticFeedback } from '../lib/utils';
 import { Parcel } from '../types';
@@ -69,7 +69,7 @@ const playErrorSound = () => {
 };
 
 interface ScannerProps {
-  onScan?: (data: { recipientName?: string; recipientPhone?: string; address: string; trackingNumber: string; isCOD: boolean; codAmount?: number; groupTag?: string }) => Promise<void> | void;
+  onScan?: (data: { recipientName?: string; recipientPhone?: string; address: string; trackingNumber: string; isCOD: boolean; codAmount?: number; groupTag?: string }, options?: { keepScannerOpen?: boolean; scanCountOffset?: number }) => Promise<void> | void;
   onMarkScan?: (trackingNumber: string) => Parcel | undefined;
   onClose: () => void;
   mode?: 'scan' | 'mark';
@@ -78,6 +78,23 @@ interface ScannerProps {
     limit: number;
   };
 }
+
+type BulkQueueItem = {
+  id: string;
+  image: string;
+  status: 'queued' | 'processing' | 'success' | 'failed';
+  trackingNumber?: string;
+  error?: string;
+};
+
+const MAX_BULK_ITEMS = 50;
+
+const sanitizeValue = (val: any) => {
+  if (val === null || val === undefined || String(val).toLowerCase() === 'null' || String(val).toLowerCase() === 'undefined') {
+    return '';
+  }
+  return String(val).trim();
+};
 
 export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan', quota }: ScannerProps) {
   const [isScanning, setIsScanning] = useState(false);
@@ -89,6 +106,10 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan', quota }: S
   const [error, setError] = useState<string | null>(null);
   const [useLiveCamera, setUseLiveCamera] = useState(true);
   const [stream, setStream] = useState<MediaStream | null>(null);
+  const [scanMode, setScanMode] = useState<'single' | 'bulk'>('single');
+  const [bulkQueue, setBulkQueue] = useState<BulkQueueItem[]>([]);
+  const [isBulkProcessing, setIsBulkProcessing] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState({ done: 0, total: 0 });
   
   const videoRef = useRef<HTMLVideoElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -104,6 +125,11 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan', quota }: S
   const [editGroup, setEditGroup] = useState('');
   const [isCOD, setIsCOD] = useState(false);
   const [codAmount, setCodAmount] = useState('');
+
+  const quotaRemaining = quota ? Math.max(0, quota.limit - quota.current) : MAX_BULK_ITEMS;
+  const bulkLimit = Math.min(MAX_BULK_ITEMS, quotaRemaining);
+  const bulkSuccessCount = bulkQueue.filter(item => item.status === 'success').length;
+  const bulkFailedCount = bulkQueue.filter(item => item.status === 'failed').length;
 
   const startCamera = async () => {
     try {
@@ -148,13 +174,13 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan', quota }: S
 
   // Start/Stop Camera
   useEffect(() => {
-    if (useLiveCamera && !scannedData && !foundParcel) {
+    if (useLiveCamera && !scannedData && !foundParcel && !isBulkProcessing) {
       startCamera();
     } else {
       stopCamera();
     }
     return () => stopCamera();
-  }, [useLiveCamera, !!scannedData, !!foundParcel]);
+  }, [useLiveCamera, !!scannedData, !!foundParcel, isBulkProcessing]);
 
   const compressImage = (base64: string): Promise<string> => {
     return new Promise((resolve) => {
@@ -302,16 +328,128 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan', quota }: S
     }
   };
 
-  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
+  const addBulkImage = async (base64: string) => {
+    if (mode !== 'scan') return;
+    if (bulkLimit <= 0 || bulkQueue.length >= bulkLimit) {
+      playErrorSound();
+      hapticFeedback('error');
+      setError(`Had bulk scan dicapai (${bulkLimit}/${MAX_BULK_ITEMS}). Proses queue sedia ada dahulu atau semak quota.`);
+      return;
+    }
 
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      const base64 = e.target?.result as string;
-      processImage(base64);
-    };
-    reader.readAsDataURL(file);
+    setIsCompressing(true);
+    setError(null);
+    try {
+      const compressedBase64 = await compressImage(base64);
+      const item: BulkQueueItem = {
+        id: typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : Date.now().toString(36) + Math.random().toString(36).slice(2),
+        image: compressedBase64,
+        status: 'queued',
+      };
+      let added = false;
+      setBulkQueue(prev => {
+        if (prev.length >= bulkLimit) return prev;
+        added = true;
+        return [...prev, item];
+      });
+      if (added) {
+        playBeep();
+        hapticFeedback('light');
+      } else {
+        playErrorSound();
+        setError(`Had bulk scan dicapai (${bulkLimit}/${MAX_BULK_ITEMS}).`);
+      }
+    } catch (err: any) {
+      playErrorSound();
+      setError(err?.message || "Gagal tambah gambar ke queue.");
+    } finally {
+      setIsCompressing(false);
+    }
+  };
+
+  const processBulkQueue = async () => {
+    if (!onScan || isBulkProcessing) return;
+    const targets = bulkQueue.filter(item => item.status === 'queued' || item.status === 'failed');
+    if (targets.length === 0) return;
+
+    setIsBulkProcessing(true);
+    setError(null);
+    setBulkProgress({ done: 0, total: targets.length });
+    let successCount = 0;
+    let failedCount = 0;
+
+    for (let i = 0; i < targets.length; i++) {
+      const item = targets[i];
+      setBulkQueue(prev => prev.map(q => q.id === item.id ? { ...q, status: 'processing', error: undefined } : q));
+
+      try {
+        const result = await extractParcelInfo(item.image);
+        const dataToSubmit = {
+          recipientName: sanitizeValue(result.recipientName) || 'Tiada Nama',
+          recipientPhone: sanitizeValue(result.recipientPhone),
+          address: sanitizeValue(result.address),
+          trackingNumber: sanitizeValue(result.trackingNumber),
+          isCOD: !!result.isCOD,
+          codAmount: result.codAmount ? parseFloat(String(result.codAmount)) : undefined,
+          groupTag: undefined,
+        };
+
+        if (!dataToSubmit.address || !dataToSubmit.trackingNumber) {
+          throw new Error("Maklumat label tidak lengkap.");
+        }
+
+        await onScan(dataToSubmit, { keepScannerOpen: true, scanCountOffset: successCount });
+        setBulkQueue(prev => prev.map(q => q.id === item.id ? {
+          ...q,
+          status: 'success',
+          trackingNumber: dataToSubmit.trackingNumber,
+          error: undefined,
+        } : q));
+        setLastScannedTracking(dataToSubmit.trackingNumber);
+        setLastScannedTime(Date.now());
+        successCount++;
+        playBeep();
+      } catch (err: any) {
+        playErrorSound();
+        failedCount++;
+        setBulkQueue(prev => prev.map(q => q.id === item.id ? {
+          ...q,
+          status: 'failed',
+          error: err?.message || "Gagal proses parcel.",
+        } : q));
+      } finally {
+        setBulkProgress({ done: i + 1, total: targets.length });
+      }
+    }
+
+    setIsBulkProcessing(false);
+    setError(failedCount > 0
+      ? `${successCount} parcel berjaya, ${failedCount} gagal. Semak thumbnail merah dan tekan Retry Failed.`
+      : `${successCount} parcel berjaya diproses.`
+    );
+    hapticFeedback('success');
+  };
+
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files || []);
+    if (files.length === 0) return;
+
+    for (const file of files) {
+      const base64 = await new Promise<string>((resolve) => {
+        const reader = new FileReader();
+        reader.onload = (e) => resolve(e.target?.result as string);
+        reader.readAsDataURL(file);
+      });
+
+      if (scanMode === 'bulk' && mode === 'scan') {
+        await addBulkImage(base64);
+      } else {
+        processImage(base64);
+        break;
+      }
+    }
     // Reset input so same file can be scanned again if needed
     event.target.value = '';
   };
@@ -319,7 +457,11 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan', quota }: S
   const handleManualCapture = () => {
     const base64 = captureFrame();
     if (base64) {
-      processImage(base64);
+      if (scanMode === 'bulk' && mode === 'scan') {
+        addBulkImage(base64);
+      } else {
+        processImage(base64);
+      }
     }
   };
 
@@ -366,7 +508,7 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan', quota }: S
         <div className={cn("p-5 border-b flex items-center justify-between text-white shrink-0 z-20 transition-all", mode === 'mark' ? "bg-purple-600" : "bg-blue-600", useLiveCamera && !scannedData && !foundParcel && "absolute top-0 inset-x-0 bg-transparent border-none shadow-none")}>
           <div className="flex flex-col">
             <h3 className="font-bold text-lg leading-tight drop-shadow-md">
-              {mode === 'mark' ? 'Mod Menanda' : (scannedData ? 'Sahkan Maklumat' : 'Scan Label Parcel')}
+              {mode === 'mark' ? 'Mod Menanda' : (scannedData ? 'Sahkan Maklumat' : scanMode === 'bulk' ? 'Bulk Scan AWB' : 'Scan Label Parcel')}
             </h3>
             {quota && !scannedData && !foundParcel && (
               <span className="text-[10px] font-black opacity-90 uppercase tracking-widest drop-shadow-md">
@@ -376,6 +518,24 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan', quota }: S
           </div>
           <div className="flex items-center gap-2">
             {mode === 'scan' && !scannedData && !foundParcel && (
+              <button
+                onClick={() => {
+                  setScanMode(scanMode === 'bulk' ? 'single' : 'bulk');
+                  setError(null);
+                }}
+                disabled={isBulkProcessing}
+                className={cn(
+                  "px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-wider transition-all border-2 backdrop-blur-md shadow-lg flex items-center gap-1",
+                  scanMode === 'bulk'
+                    ? "bg-orange-500/90 text-white border-orange-300"
+                    : "bg-black/40 text-white/80 border-white/20"
+                )}
+              >
+                <Layers size={12} />
+                {scanMode === 'bulk' ? 'Bulk' : 'Single'}
+              </button>
+            )}
+            {mode === 'scan' && !scannedData && !foundParcel && scanMode === 'single' && (
               <button 
                 onClick={() => setIsContinuous(!isContinuous)}
                 className={cn(
@@ -395,7 +555,7 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan', quota }: S
         </div>
 
         <div className={cn("flex flex-col flex-1 overflow-y-auto relative", (!useLiveCamera || scannedData || foundParcel) && "p-6 gap-6")}>
-          {(isCompressing || isScanning || isSaving) && (
+          {(isCompressing || isScanning || isSaving || isBulkProcessing) && (
             <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/20 backdrop-blur-[2px] animate-in fade-in duration-200">
               <div className="bg-white/90 p-6 rounded-[2rem] shadow-2xl border border-white/20 flex flex-col items-center gap-3 backdrop-blur-md">
                 <div className="relative">
@@ -404,10 +564,17 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan', quota }: S
                 </div>
                 <div className="text-center">
                   <p className="text-gray-800 font-black text-sm">
-                    {isCompressing ? 'Memproses...' : (isSaving ? 'Menyimpan...' : 'Membaca Label...')}
+                    {isBulkProcessing ? `Bulk Processing ${bulkProgress.done}/${bulkProgress.total}` : isCompressing ? 'Memproses...' : (isSaving ? 'Menyimpan...' : 'Membaca Label...')}
                   </p>
                 </div>
-                {isContinuous && (isScanning || isSaving) && (
+                {scanMode === 'bulk' && isBulkProcessing ? (
+                  <div className="w-48 h-2 bg-gray-200 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-orange-500 transition-all"
+                      style={{ width: `${bulkProgress.total ? (bulkProgress.done / bulkProgress.total) * 100 : 0}%` }}
+                    />
+                  </div>
+                ) : isContinuous && (isScanning || isSaving) && (
                   <div className="bg-blue-600 text-white px-4 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest animate-bounce shadow-lg shadow-blue-500/50">
                     Auto-Saving...
                   </div>
@@ -608,6 +775,58 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan', quota }: S
                     </div>
                   </div>
 
+                  {scanMode === 'bulk' && mode === 'scan' && (
+                    <div className="absolute top-20 left-4 right-4 z-10 bg-black/55 text-white rounded-3xl p-4 backdrop-blur-md border border-white/15 shadow-2xl space-y-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-[10px] font-black uppercase tracking-widest text-white/60">Queue AWB</p>
+                          <p className="text-xl font-black leading-none">{bulkQueue.length} / {bulkLimit}</p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {bulkFailedCount > 0 && (
+                            <span className="px-2 py-1 bg-red-500/90 rounded-full text-[10px] font-black">{bulkFailedCount} gagal</span>
+                          )}
+                          {bulkSuccessCount > 0 && (
+                            <span className="px-2 py-1 bg-green-500/90 rounded-full text-[10px] font-black">{bulkSuccessCount} siap</span>
+                          )}
+                          <button
+                            onClick={() => setBulkQueue([])}
+                            disabled={isBulkProcessing || bulkQueue.length === 0}
+                            className="p-2 bg-white/10 hover:bg-white/20 rounded-xl disabled:opacity-40 pointer-events-auto"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </div>
+                      </div>
+                      {bulkQueue.length > 0 && (
+                        <div className="flex gap-2 overflow-x-auto pb-1 pointer-events-auto">
+                          {bulkQueue.map((item, idx) => (
+                            <div key={item.id} className="relative w-14 h-14 rounded-xl overflow-hidden shrink-0 border border-white/20 bg-white/10">
+                              <img src={item.image} alt={`AWB ${idx + 1}`} className="w-full h-full object-cover" />
+                              <div className={cn(
+                                "absolute inset-x-0 bottom-0 text-[9px] font-black text-center py-0.5",
+                                item.status === 'success' ? "bg-green-500" :
+                                item.status === 'failed' ? "bg-red-500" :
+                                item.status === 'processing' ? "bg-orange-500" : "bg-black/60"
+                              )}>
+                                {idx + 1}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {bulkFailedCount > 0 && !isBulkProcessing && (
+                        <button
+                          onClick={processBulkQueue}
+                          className="w-full py-2 bg-red-500 text-white rounded-xl font-black text-xs flex items-center justify-center gap-2 pointer-events-auto"
+                        >
+                          <RotateCcw size={14} />
+                          Retry Failed
+                        </button>
+                      )}
+                    </div>
+                  )}
+
                   {/* Camera Controls */}
                   <div className="absolute bottom-10 inset-x-0 px-8 flex items-center justify-between">
                     <button 
@@ -626,15 +845,25 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan', quota }: S
                       </div>
                     </button>
 
-                    <button 
-                      onClick={() => setIsContinuous(!isContinuous)}
-                      className={cn(
-                        "w-16 h-16 rounded-2xl backdrop-blur-md transition-all border-2 flex items-center justify-center shadow-lg",
-                        isContinuous ? "bg-blue-600 border-blue-400 text-white shadow-blue-500/50" : "bg-black/50 border-white/20 text-white/70"
-                      )}
-                    >
-                      {isContinuous ? <Zap size={28} /> : <ZapOff size={28} />}
-                    </button>
+                    {scanMode === 'bulk' && mode === 'scan' ? (
+                      <button
+                        onClick={processBulkQueue}
+                        disabled={isBulkProcessing || bulkQueue.filter(item => item.status === 'queued' || item.status === 'failed').length === 0}
+                        className="w-16 h-16 rounded-2xl backdrop-blur-md transition-all border-2 flex items-center justify-center shadow-lg bg-orange-500 border-orange-300 text-white disabled:bg-black/40 disabled:border-white/20 disabled:text-white/50"
+                      >
+                        {isBulkProcessing ? <Loader2 className="animate-spin" size={28} /> : <Play size={28} />}
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => setIsContinuous(!isContinuous)}
+                        className={cn(
+                          "w-16 h-16 rounded-2xl backdrop-blur-md transition-all border-2 flex items-center justify-center shadow-lg",
+                          isContinuous ? "bg-blue-600 border-blue-400 text-white shadow-blue-500/50" : "bg-black/50 border-white/20 text-white/70"
+                        )}
+                      >
+                        {isContinuous ? <Zap size={28} /> : <ZapOff size={28} />}
+                      </button>
+                    )}
                   </div>
                 </div>
               ) : (
@@ -653,7 +882,9 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan', quota }: S
                     <p className="text-gray-600 text-sm">
                       {mode === 'mark' 
                         ? 'Scan label untuk tahu nombor stop parcel ini. Tulis nombor tu besar-besar kat parcel!' 
-                        : 'Snap gambar label AWB (Shopee/Lazada/J&T) untuk ambil alamat secara automatik.'}
+                        : scanMode === 'bulk'
+                          ? 'Snap semua label dulu. Bila selesai, tekan proses untuk upload dan baca semua AWB.'
+                          : 'Snap gambar label AWB (Shopee/Lazada/J&T) untuk ambil alamat secara automatik.'}
                     </p>
                   </div>
 
@@ -668,7 +899,7 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan', quota }: S
                       <Camera size={28} />
                       <div className="text-left">
                         <p className="text-lg leading-none">Guna Live Camera</p>
-                        <p className="text-[10px] opacity-80 font-medium uppercase tracking-wider">Scan Laju-Laju</p>
+                        <p className="text-[10px] opacity-80 font-medium uppercase tracking-wider">{scanMode === 'bulk' ? 'Capture Queue' : 'Scan Laju-Laju'}</p>
                       </div>
                     </button>
                     
@@ -677,13 +908,56 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan', quota }: S
                       className="flex items-center justify-center gap-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-4 px-6 rounded-2xl transition-all active:scale-95"
                     >
                       <Upload size={20} className="text-gray-400" />
-                      Pilih dari Galeri
+                      {scanMode === 'bulk' ? 'Pilih Banyak Gambar' : 'Pilih dari Galeri'}
                     </button>
                   </div>
+
+                  {scanMode === 'bulk' && mode === 'scan' && (
+                    <div className="bg-orange-50 border-2 border-orange-100 rounded-3xl p-4 space-y-4">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="text-[10px] font-black text-orange-500 uppercase tracking-widest">Queue AWB</p>
+                          <p className="text-2xl font-black text-gray-900">{bulkQueue.length} / {bulkLimit}</p>
+                        </div>
+                        <button
+                          onClick={() => setBulkQueue([])}
+                          disabled={isBulkProcessing || bulkQueue.length === 0}
+                          className="p-3 bg-white text-red-500 rounded-2xl border border-orange-100 disabled:opacity-40"
+                        >
+                          <Trash2 size={18} />
+                        </button>
+                      </div>
+                      {bulkQueue.length > 0 && (
+                        <div className="grid grid-cols-5 gap-2">
+                          {bulkQueue.slice(0, 10).map((item, idx) => (
+                            <div key={item.id} className="relative aspect-square rounded-xl overflow-hidden bg-white border border-orange-100">
+                              <img src={item.image} alt={`AWB ${idx + 1}`} className="w-full h-full object-cover" />
+                              <div className={cn(
+                                "absolute inset-x-0 bottom-0 text-[9px] font-black text-white text-center py-0.5",
+                                item.status === 'success' ? "bg-green-500" :
+                                item.status === 'failed' ? "bg-red-500" :
+                                item.status === 'processing' ? "bg-orange-500" : "bg-black/60"
+                              )}>
+                                {idx + 1}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      <button
+                        onClick={processBulkQueue}
+                        disabled={isBulkProcessing || bulkQueue.filter(item => item.status === 'queued' || item.status === 'failed').length === 0}
+                        className="w-full py-4 bg-orange-500 hover:bg-orange-600 text-white rounded-2xl font-black shadow-lg shadow-orange-100 flex items-center justify-center gap-2 disabled:opacity-50"
+                      >
+                        {isBulkProcessing ? <Loader2 className="animate-spin" size={20} /> : <Play size={20} />}
+                        Proses {bulkQueue.filter(item => item.status === 'queued' || item.status === 'failed').length} Parcel
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
 
-              {isContinuous && lastScannedTracking && (
+              {scanMode === 'single' && isContinuous && lastScannedTracking && (
                 <div className="bg-green-50 text-green-700 p-3 rounded-2xl text-xs font-bold border border-green-100 animate-in fade-in slide-in-from-top-1 flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <CheckCircle size={16} />
@@ -706,6 +980,7 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan', quota }: S
           type="file"
           accept="image/*"
           capture="environment"
+          multiple={scanMode === 'bulk' && mode === 'scan'}
           className="absolute w-0 h-0 opacity-0 pointer-events-none"
           ref={fileInputRef}
           onChange={handleFileUpload}
@@ -713,6 +988,7 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan', quota }: S
         <input
           type="file"
           accept="image/*"
+          multiple={scanMode === 'bulk' && mode === 'scan'}
           className="absolute w-0 h-0 opacity-0 pointer-events-none"
           ref={galleryInputRef}
           onChange={handleFileUpload}

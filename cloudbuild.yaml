@@ -5,9 +5,9 @@ steps:
     args:
       - 'build'
       - '-t'
-      - 'us-west1-docker.pkg.dev/$PROJECT_ID/routeking/app:$SHORT_SHA'
+      - 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/routeking/app:$SHORT_SHA'
       - '-t'
-      - 'us-west1-docker.pkg.dev/$PROJECT_ID/routeking/app:latest'
+      - 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/routeking/app:latest'
       - '--build-arg'
       - 'GEMINI_API_KEY=$_GEMINI_API_KEY'
       - '--build-arg'
@@ -20,7 +20,7 @@ steps:
     args:
       - 'push'
       - '--all-tags'
-      - 'us-west1-docker.pkg.dev/$PROJECT_ID/routeking/app'
+      - 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/routeking/app'
 
   # Step 3: Deploy to Cloud Run
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
@@ -30,8 +30,8 @@ steps:
       - 'run'
       - 'deploy'
       - 'routeking-courier-edition'
-      - '--image=us-west1-docker.pkg.dev/$PROJECT_ID/routeking/app:$SHORT_SHA'
-      - '--region=us-west1'
+      - '--image=asia-southeast1-docker.pkg.dev/$PROJECT_ID/routeking/app:$SHORT_SHA'
+      - '--region=asia-southeast1'
       - '--platform=managed'
       - '--allow-unauthenticated'
       - '--memory=512Mi'
@@ -42,8 +42,8 @@ steps:
         --update-env-vars=^##^NODE_ENV=production##GEMINI_API_KEY=$_GEMINI_API_KEY##CUSTOM_GEMINI_KEY=$_GEMINI_API_KEY##GOOGLE_MAPS_API_KEY=$_GOOGLE_MAPS_API_KEY##TOYYIBPAY_SECRET_KEY=$_TOYYIBPAY_SECRET_KEY##TOYYIBPAY_CATEGORY_CODE=$_TOYYIBPAY_CATEGORY_CODE##TOYYIBPAY_SANDBOX=$_TOYYIBPAY_SANDBOX##APP_URL=$_APP_URL##PUBLIC_URL=$_APP_URL##ALLOWED_DOMAINS=$_ALLOWED_DOMAINS
 
 images:
-  - 'us-west1-docker.pkg.dev/$PROJECT_ID/routeking/app:$SHORT_SHA'
-  - 'us-west1-docker.pkg.dev/$PROJECT_ID/routeking/app:latest'
+  - 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/routeking/app:$SHORT_SHA'
+  - 'asia-southeast1-docker.pkg.dev/$PROJECT_ID/routeking/app:latest'
 
 # Default substitution values (overridden in trigger config)
 substitutions:

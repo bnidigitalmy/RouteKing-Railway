@@ -9,6 +9,7 @@ import cors from "cors";
 import admin from "firebase-admin";
 import { getFirestore } from "firebase-admin/firestore";
 import fs from "fs";
+import { GoogleGenAI, Type } from "@google/genai";
 
 // Load Firebase Config
 const firebaseConfigPath = path.join(process.cwd(), 'firebase-applet-config.json');
@@ -40,6 +41,16 @@ const TIER_AMOUNTS: Record<string, number> = {
   lite: 1490,
   standard: 2990,
   ultimate: 4990,
+};
+
+type PendingPayment = {
+  uid: string;
+  email: string;
+  type: 'monthly' | 'yearly';
+  tier: 'lite' | 'standard' | 'ultimate';
+  amount: number;
+  billCode?: string;
+  status?: 'pending' | 'completed';
 };
 
 // ---------------------------------------------------------------------------
@@ -91,6 +102,23 @@ function getSafeAppUrl(req: Request): string {
   return `http://localhost:${process.env.PORT || 3000}`;
 }
 
+function firstValue(value: unknown): string | undefined {
+  if (Array.isArray(value)) return typeof value[0] === 'string' ? value[0] : undefined;
+  return typeof value === 'string' ? value : undefined;
+}
+
+async function verifyFirebaseBearer(req: Request): Promise<admin.auth.DecodedIdToken | null> {
+  const header = req.get('authorization') || '';
+  const match = header.match(/^Bearer\s+(.+)$/i);
+  if (!match) return null;
+
+  try {
+    return await admin.auth().verifyIdToken(match[1]);
+  } catch {
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Server bootstrap
 // ---------------------------------------------------------------------------
@@ -111,8 +139,8 @@ async function startServer() {
         "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://apis.google.com https://accounts.google.com https://www.gstatic.com https://www.google.com https://ssl.gstatic.com",
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com https://www.gstatic.com",
         "font-src 'self' https://fonts.gstatic.com https://www.gstatic.com",
-        "img-src 'self' data: blob: https://*.tile.openstreetmap.org https://maps.googleapis.com https://maps.gstatic.com https://lh3.googleusercontent.com https://www.gstatic.com https://ssl.gstatic.com https://www.google.com",
-        "connect-src 'self' https://*.googleapis.com wss://*.googleapis.com https://apis.google.com https://www.google.com https://www.gstatic.com https://nominatim.openstreetmap.org https://router.project-osrm.org https://toyyibpay.com https://dev.toyyibpay.com",
+        "img-src 'self' data: blob: https://*.tile.openstreetmap.org https://maps.googleapis.com https://maps.gstatic.com https://lh3.googleusercontent.com https://www.gstatic.com https://ssl.gstatic.com https://www.google.com https://firebasestorage.googleapis.com",
+        "connect-src 'self' https://*.googleapis.com wss://*.googleapis.com https://apis.google.com https://www.google.com https://www.gstatic.com https://nominatim.openstreetmap.org https://router.project-osrm.org https://toyyibpay.com https://dev.toyyibpay.com https://firebasestorage.googleapis.com",
         "frame-src https://accounts.google.com https://gen-lang-client-0580807845.firebaseapp.com https://www.google.com https://gen-lang-client-0580807845.web.app",
         "object-src 'none'",
         "base-uri 'self'",
@@ -126,14 +154,149 @@ async function startServer() {
     : true;
 
   app.use(cors({ origin: corsOrigins }));
-  app.use(bodyParser.json());
-  app.use(bodyParser.urlencoded({ extended: true }));
+  app.use(bodyParser.json({ limit: '8mb' }));
+  app.use(bodyParser.urlencoded({ extended: true, limit: '8mb' }));
 
   const TOYYIBPAY_SECRET = process.env.TOYYIBPAY_SECRET_KEY;
   const TOYYIBPAY_CATEGORY = process.env.TOYYIBPAY_CATEGORY_CODE;
   const TOYYIBPAY_BASE_URL = process.env.TOYYIBPAY_SANDBOX === 'true'
     ? "https://dev.toyyibpay.com/index.php/api"
     : "https://toyyibpay.com/index.php/api";
+
+  async function verifyToyyibPayTransaction(payment: PendingPayment, refNo: string, billCode: string): Promise<Record<string, unknown> | null> {
+    const formData = new URLSearchParams();
+    formData.append('billCode', billCode);
+    formData.append('billpaymentStatus', '1');
+
+    const response = await axios.post<any>(`${TOYYIBPAY_BASE_URL}/getBillTransactions`, formData, {
+      timeout: 10000,
+    });
+
+    if (!Array.isArray(response.data)) return null;
+
+    const expectedAmount = (payment.amount / 100).toFixed(2);
+    const transaction = response.data.find((tx: any) => {
+      const externalRef = String(tx.billExternalReferenceNo || '');
+      const paymentStatus = String(tx.billpaymentStatus || tx.billStatus || '');
+      const amount = Number.parseFloat(String(tx.billpaymentAmount || '0')).toFixed(2);
+      return externalRef === refNo && paymentStatus === '1' && amount === expectedAmount;
+    });
+
+    return transaction || null;
+  }
+
+  async function activateVerifiedPayment(refNo: string, billCodeFromGateway?: string | null): Promise<boolean> {
+    const pendingRef = db.collection('pending_payments').doc(refNo);
+    const pendingDoc = await pendingRef.get();
+    if (!pendingDoc.exists) return false;
+
+    const payment = pendingDoc.data() as PendingPayment;
+    if (payment.status === 'completed') return true;
+
+    const billCode = billCodeFromGateway || payment.billCode;
+    if (!billCode) return false;
+
+    const transaction = await verifyToyyibPayTransaction(payment, refNo, billCode);
+    if (!transaction) return false;
+
+    const now = Date.now();
+    const expiryDate = payment.type === 'yearly'
+      ? now + 366 * 24 * 60 * 60 * 1000
+      : now + 31 * 24 * 60 * 60 * 1000;
+
+    await db.collection('profiles').doc(payment.uid).set({
+      isPro: true,
+      subscriptionTier: payment.tier,
+      expiryDate,
+      lastPaymentDate: now,
+      lastBillCode: billCode,
+      subscriptionType: payment.type,
+      updatedAt: now,
+    }, { merge: true });
+
+    await pendingRef.set({
+      status: 'completed',
+      billCode,
+      verifiedAt: now,
+      transaction,
+    }, { merge: true });
+
+    return true;
+  }
+
+  // -------------------------------------------------------------------------
+  // Gemini OCR proxy - keeps the Gemini API key server-side only
+  // -------------------------------------------------------------------------
+  app.post("/api/ocr/extract", async (req: Request, res: Response) => {
+    if (!isValidOrigin(req)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    const token = await verifyFirebaseBearer(req);
+    if (!token) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+
+    const { image } = req.body;
+    if (!image || typeof image !== 'string' || !image.startsWith('data:image/')) {
+      return res.status(400).json({ error: "Valid base64 image data URL required" });
+    }
+
+    const geminiKey = (process.env.CUSTOM_GEMINI_KEY || process.env.GEMINI_API_KEY || '').replace(/['"]/g, '').trim();
+    if (!geminiKey || geminiKey.length < 10 || geminiKey === 'MY_GEMINI_API_KEY') {
+      return res.status(503).json({ error: "Gemini OCR not configured" });
+    }
+
+    const mimeType = image.split(';')[0].split(':')[1] || 'image/jpeg';
+    const base64Data = image.split(',')[1];
+    if (!base64Data) {
+      return res.status(400).json({ error: "Invalid image payload" });
+    }
+
+    try {
+      const ai = new GoogleGenAI({ apiKey: geminiKey });
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash-lite',
+        contents: {
+          parts: [
+            {
+              text: "Extract from Malaysian AWB: recipientName, recipientPhone, address, trackingNumber, isCOD (bool), codAmount (number). Return JSON only.",
+            },
+            { inlineData: { data: base64Data, mimeType } },
+          ],
+        },
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              recipientName: { type: Type.STRING, description: "Recipient's full name" },
+              recipientPhone: { type: Type.STRING, description: "Recipient's phone number" },
+              address: { type: Type.STRING, description: "Full recipient delivery address" },
+              trackingNumber: { type: Type.STRING, description: "Courier tracking number" },
+              isCOD: { type: Type.BOOLEAN, description: "True if COD is mentioned" },
+              codAmount: { type: Type.NUMBER, description: "The RM amount for COD if applicable" },
+            },
+            required: ['recipientName', 'address', 'trackingNumber'],
+          },
+        },
+      });
+
+      if (!response.text) {
+        return res.status(422).json({ error: "Tiada teks dikesan dalam gambar." });
+      }
+
+      return res.json(JSON.parse(response.text));
+    } catch (error: any) {
+      const message = String(error?.message || '');
+      if (message.includes('429') || message.includes('RESOURCE_EXHAUSTED') || message.toLowerCase().includes('quota')) {
+        return res.status(429).json({
+          error: "Had penggunaan (Quota) Gemini anda telah tamat atau terlalu laju. Sila tunggu sebentar atau semak baki kredit di Google AI Studio.",
+        });
+      }
+      return res.status(502).json({ error: "Gagal membaca label melalui Gemini OCR." });
+    }
+  });
 
   // -------------------------------------------------------------------------
   // Google Maps Geocoding proxy — keeps the API key server-side only
@@ -176,10 +339,19 @@ async function startServer() {
       return res.status(403).json({ error: "Forbidden" });
     }
 
+    const token = await verifyFirebaseBearer(req);
+    if (!token) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+
     const { uid, email, name, phone, type, tier } = req.body;
 
     if (!uid || !email || !type || !tier) {
       return res.status(400).json({ error: "Missing required fields" });
+    }
+
+    if (token.uid !== uid || token.email !== email) {
+      return res.status(403).json({ error: "Authenticated user does not match payment request" });
     }
 
     if (!VALID_TIERS.has(tier) || !VALID_TYPES.has(type)) {
@@ -236,6 +408,11 @@ async function startServer() {
 
       if (response.data?.[0]?.BillCode) {
         const billCode = response.data[0].BillCode;
+        await db.collection('pending_payments').doc(refNo).set({
+          billCode,
+          status: 'pending',
+          updatedAt: Date.now(),
+        }, { merge: true });
         const paymentUrl = `${process.env.TOYYIBPAY_SANDBOX === 'true' ? 'https://dev.toyyibpay.com' : 'https://toyyibpay.com'}/${billCode}`;
         return res.json({ paymentUrl });
       }
@@ -265,29 +442,7 @@ async function startServer() {
 
     try {
       // Trust ONLY the pending_payments document — never query params
-      const pendingDoc = await db.collection('pending_payments').doc(ourRef).get();
-      if (!pendingDoc.exists) {
-        return res.send("OK");
-      }
-
-      const { uid, type, tier } = pendingDoc.data()!;
-      const now = Date.now();
-      const expiryDate = type === 'yearly'
-        ? now + 366 * 24 * 60 * 60 * 1000
-        : now + 31 * 24 * 60 * 60 * 1000;
-
-      await db.collection('profiles').doc(uid).set({
-        isPro: true,
-        subscriptionTier: tier,
-        expiryDate,
-        lastPaymentDate: now,
-        lastBillCode: billcode || null,
-        subscriptionType: type,
-        updatedAt: now,
-      }, { merge: true });
-
-      // Remove pending record after successful activation
-      await db.collection('pending_payments').doc(ourRef).delete();
+      await activateVerifiedPayment(ourRef, billcode || null);
     } catch (error) {
       console.error("Callback error:", error instanceof Error ? error.message : 'unknown');
     }
@@ -299,44 +454,31 @@ async function startServer() {
   // 3. Payment Return URL (browser redirect after payment)
   // -------------------------------------------------------------------------
   app.get("/api/payment/return", async (req: Request, res: Response) => {
-    const { status, billcode, refno, order_id } = req.query;
+    const { status, status_id, billcode, refno, order_id } = req.query;
 
     // refno is pre-set by us in the return URL; order_id may be appended by ToyyibPay
     // Use the first non-array, non-empty value
-    const rawRef = Array.isArray(refno) ? refno[0] : refno;
-    const rawOrderId = Array.isArray(order_id) ? order_id[0] : order_id;
-    const ourRef = (rawRef || rawOrderId) as string | undefined;
+    const rawRef = firstValue(refno);
+    const rawOrderId = firstValue(order_id);
+    const ourRef = rawRef || rawOrderId;
+    const paymentStatus = firstValue(status_id) || firstValue(status);
+    const gatewayBillCode = firstValue(billcode);
+    let verified = false;
 
-    if (status === '1' && ourRef) {
+    if (paymentStatus === '1' && ourRef) {
       try {
-        const pendingDoc = await db.collection('pending_payments').doc(ourRef).get();
-        if (pendingDoc.exists) {
-          const { uid, type, tier } = pendingDoc.data()!;
-          const now = Date.now();
-          const expiryDate = type === 'yearly'
-            ? now + 366 * 24 * 60 * 60 * 1000
-            : now + 31 * 24 * 60 * 60 * 1000;
-
-          await db.collection('profiles').doc(uid).set({
-            isPro: true,
-            subscriptionTier: tier,
-            expiryDate,
-            lastPaymentDate: now,
-            lastBillCode: (billcode as string) || null,
-            subscriptionType: type,
-            updatedAt: now,
-          }, { merge: true });
-
-          await db.collection('pending_payments').doc(ourRef).delete();
-        }
+        verified = await activateVerifiedPayment(ourRef, gatewayBillCode || null);
       } catch (error) {
         console.error("Return activation error:", error instanceof Error ? error.message : 'unknown');
       }
     }
 
     // Always redirect to a fixed path — no open redirect possible
-    if (status === '1') {
+    if (verified) {
       return res.redirect('/?payment=success');
+    }
+    if (paymentStatus === '1') {
+      return res.redirect('/?payment=pending');
     }
     return res.redirect('/?payment=failed');
   });

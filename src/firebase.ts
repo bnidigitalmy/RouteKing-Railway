@@ -1,5 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, User } from 'firebase/auth';
+import { getStorage, ref, uploadString, getDownloadURL } from 'firebase/storage';
 import {
   initializeFirestore,
   collection,
@@ -30,6 +31,7 @@ export const db = initializeFirestore(app, {
 
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
+export const storage = getStorage(app);
 
 // Auth functions
 // Popup-only sign-in. signInWithRedirect is intentionally NOT used because:
@@ -111,5 +113,8 @@ export {
   limit, 
   serverTimestamp,
   onAuthStateChanged,
-  addDoc
+  addDoc,
+  ref,
+  uploadString,
+  getDownloadURL
 };

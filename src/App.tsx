@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useCallback, Suspense, lazy } from 'react';
-import axios from 'axios';
 // Code splitting for large components
 const LandingPage = lazy(() => import('./components/LandingPage').then(m => ({ default: m.LandingPage })));
 const AdminDashboard = lazy(() => import('./components/AdminDashboard').then(m => ({ default: m.AdminDashboard })));
@@ -19,6 +18,8 @@ import { HoldButton } from './components/ui/HoldButton';
 import { ParcelSkeleton } from './components/ui/Skeleton';
 import { optimizeRoute } from './lib/optimizer';
 import { getCoordinates } from './lib/gemini';
+import { uploadParcelPhoto } from './lib/parcelPhotos';
+import { createSubscriptionPayment } from './lib/payments';
 import { cn, hapticFeedback } from './lib/utils';
 import confetti from 'canvas-confetti';
 import { motion, AnimatePresence } from 'motion/react';
@@ -162,6 +163,10 @@ export default function App() {
       setError("Pembayaran tidak berjaya atau telah dibatalkan. Sila cuba lagi.");
       setIsSubscriptionModalOpen(true);
       setPaymentFailed(true);
+      window.history.replaceState({}, document.title, "/");
+    } else if (urlParams.get('payment') === 'pending') {
+      setError("Pembayaran sedang disahkan. Jika bayaran telah dibuat, akaun akan aktif selepas ToyyibPay mengesahkan transaksi.");
+      setIsSubscriptionModalOpen(true);
       window.history.replaceState({}, document.title, "/");
     }
 
@@ -311,14 +316,20 @@ export default function App() {
     return address.toLowerCase().replace(/[^a-z0-9]/g, '');
   };
 
-  const handleScan = async (data: { recipientName?: string; recipientPhone?: string; address: string; trackingNumber: string; isCOD?: boolean; codAmount?: number; groupTag?: string }) => {
+  const handleScan = async (
+    data: { recipientName?: string; recipientPhone?: string; address: string; trackingNumber: string; isCOD?: boolean; codAmount?: number; groupTag?: string },
+    options?: { keepScannerOpen?: boolean; scanCountOffset?: number }
+  ) => {
     if (!user || !profile) return;
+    const scanCountOffset = options?.scanCountOffset || 0;
 
     // Trial scan limit check (scan-based trial users only)
     if (profile.trialScansUsed !== undefined && !profile.isPro) {
-      const scansUsed = profile.trialScansUsed;
+      const scansUsed = profile.trialScansUsed + scanCountOffset;
       if (scansUsed >= TRIAL_SCAN_LIMIT) {
-        setIsScannerOpen(false);
+        if (!options?.keepScannerOpen) {
+          setIsScannerOpen(false);
+        }
         setError(`Had scan percubaan telah habis (${scansUsed}/${TRIAL_SCAN_LIMIT}). Langgan RouteKing Pro untuk terus scan!`);
         setIsSubscriptionModalOpen(true);
         return;
@@ -333,22 +344,26 @@ export default function App() {
     const isNewDay = profile.lastScanResetDate !== today;
     const isNewMonth = profile.lastScanResetMonth !== thisMonth;
 
-    const currentDailyCount = isNewDay ? 0 : (profile.dailyScanCount || 0);
-    const currentMonthlyCount = isNewMonth ? 0 : (profile.monthlyScanCount || 0);
+    const currentDailyCount = (isNewDay ? 0 : (profile.dailyScanCount || 0)) + scanCountOffset;
+    const currentMonthlyCount = (isNewMonth ? 0 : (profile.monthlyScanCount || 0)) + scanCountOffset;
 
     const tier = profile.subscriptionTier || 'free';
     const dailyLimit = TIER_LIMITS[tier].daily;
     const monthlyLimit = TIER_LIMITS[tier].monthly;
 
     if (currentDailyCount >= dailyLimit) {
-      setIsScannerOpen(false);
+      if (!options?.keepScannerOpen) {
+        setIsScannerOpen(false);
+      }
       setError(`Had scan harian dicapai (${currentDailyCount}/${dailyLimit}). Sila cuba lagi esok atau upgrade ke Pro.`);
       if (!profile.isPro) setIsSubscriptionModalOpen(true);
       return;
     }
 
     if (currentMonthlyCount >= monthlyLimit) {
-      setIsScannerOpen(false);
+      if (!options?.keepScannerOpen) {
+        setIsScannerOpen(false);
+      }
       setError(`Had scan bulanan dicapai (${currentMonthlyCount}/${monthlyLimit}). Sila tunggu bulan depan atau upgrade ke Pro.`);
       if (!profile.isPro) setIsSubscriptionModalOpen(true);
       return;
@@ -434,11 +449,13 @@ export default function App() {
       };
       // Increment trial scan counter (scan-based trial only, can never decrease)
       if (profile.trialScansUsed !== undefined && !profile.isPro) {
-        scanCountUpdate.trialScansUsed = (profile.trialScansUsed || 0) + 1;
+        scanCountUpdate.trialScansUsed = (profile.trialScansUsed || 0) + scanCountOffset + 1;
       }
       await updateDoc(doc(db, 'profiles', user.uid), scanCountUpdate);
 
-      setIsScannerOpen(false);
+      if (!options?.keepScannerOpen) {
+        setIsScannerOpen(false);
+      }
       setError(null);
       
       // Success feedback
@@ -503,7 +520,7 @@ export default function App() {
     }
   };
 
-  const markDelivered = useCallback(async (id: string, podPhotoUrl?: string) => {
+  const markDelivered = useCallback(async (id: string, podPhotoDataUrl?: string) => {
     if (!user) return;
     try {
       const parcelRef = doc(db, 'parcels', id);
@@ -514,8 +531,8 @@ export default function App() {
         failedReason: null,
         failedPhotoUrl: null
       };
-      if (podPhotoUrl) {
-        updateData.podPhotoUrl = podPhotoUrl;
+      if (podPhotoDataUrl) {
+        updateData.podPhotoUrl = await uploadParcelPhoto(user.uid, id, 'pod', podPhotoDataUrl);
       }
       hapticFeedback('success');
       await updateDoc(parcelRef, updateData);
@@ -524,7 +541,7 @@ export default function App() {
     }
   }, [user]);
 
-  const markFailed = useCallback(async (id: string, reason: string, status: 'failed' | 'retry' | 'return', failedPhotoUrl?: string) => {
+  const markFailed = useCallback(async (id: string, reason: string, status: 'failed' | 'retry' | 'return', failedPhotoDataUrl?: string) => {
     if (!user) return;
     try {
       const parcelRef = doc(db, 'parcels', id);
@@ -535,8 +552,8 @@ export default function App() {
         deliveredAt: null,
         podPhotoUrl: null
       };
-      if (failedPhotoUrl) {
-        updateData.failedPhotoUrl = failedPhotoUrl;
+      if (failedPhotoDataUrl) {
+        updateData.failedPhotoUrl = await uploadParcelPhoto(user.uid, id, 'failed', failedPhotoDataUrl);
       }
       hapticFeedback('medium');
       await updateDoc(parcelRef, updateData);
@@ -722,7 +739,6 @@ export default function App() {
       // Initialize scan-based trial for brand new profiles
       if (!profile) {
         profileData.trialScansUsed = 0;
-        profileData.isPro = false;
       }
 
       await setDoc(doc(db, 'profiles', user.uid), profileData, { merge: true });
@@ -756,25 +772,23 @@ export default function App() {
     setPaymentUrl(null);
     setPaymentFailed(false);
     try {
-      const response = await axios.post('/api/payment/create', {
+      const idToken = await user.getIdToken();
+      const nextPaymentUrl = await createSubscriptionPayment({
         uid: user.uid,
-        email: user.email,
+        email: user.email || '',
+        idToken,
         name: riderName || user.displayName,
         phone: profile?.phone || '',
-        tier: tier,
-        type: type
+        tier,
+        type
       });
       
-      if (response.data.paymentUrl) {
-        setPaymentUrl(response.data.paymentUrl);
-        // Try to open automatically, but the button will be there as fallback
-        window.open(response.data.paymentUrl, '_blank');
-      } else {
-        throw new Error("Payment URL not found");
-      }
+      setPaymentUrl(nextPaymentUrl);
+      // Try to open automatically, but the button will be there as fallback.
+      window.open(nextPaymentUrl, '_blank');
     } catch (err: any) {
       console.error("Payment creation failed:", err);
-      const msg = err.response?.data?.error || err.message || "Gagal memulakan pembayaran";
+      const msg = err.message || "Gagal memulakan pembayaran";
       setError(`Ralat: ${msg}. Sila pastikan kunci API ToyyibPay telah dikonfigurasi di Settings.`);
     } finally {
       setIsSavingProfile(false);

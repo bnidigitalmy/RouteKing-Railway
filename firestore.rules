@@ -49,6 +49,14 @@ service cloud.firestore {
 
     function isValidParcel(data) {
       return data.keys().hasAll(['id', 'address', 'trackingNumber', 'status', 'uid']) &&
+             data.keys().hasOnly([
+               'id', 'trackingNumber', 'recipientName', 'recipientPhone',
+               'address', 'status', 'sequenceNumber', 'lat', 'lng',
+               'scannedAt', 'deliveredAt', 'failedAt', 'failedReason',
+               'failedPhotoUrl', 'podPhotoUrl', 'isCOD', 'codAmount',
+               'groupTag', 'folder', 'addressNotes', 'isLocationVerified',
+               'uid'
+             ]) &&
              data.id is string && data.id.size() <= 64 &&
              data.address is string && data.address.size() <= 1000 &&
              data.trackingNumber is string && data.trackingNumber.size() <= 100 &&
@@ -58,14 +66,24 @@ service cloud.firestore {
              (!('lat' in data) || data.lat is number) &&
              (!('lng' in data) || data.lng is number) &&
              (!('scannedAt' in data) || data.scannedAt is number) &&
+             (!('recipientName' in data) || data.recipientName is string) &&
+             (!('recipientPhone' in data) || data.recipientPhone is string) &&
+             (!('deliveredAt' in data) || data.deliveredAt is number || data.deliveredAt == null) &&
+             (!('failedAt' in data) || data.failedAt is number || data.failedAt == null) &&
+             (!('failedReason' in data) || data.failedReason is string || data.failedReason == null) &&
+             (!('failedPhotoUrl' in data) || data.failedPhotoUrl is string || data.failedPhotoUrl == null) &&
+             (!('podPhotoUrl' in data) || data.podPhotoUrl is string || data.podPhotoUrl == null) &&
              (!('isCOD' in data) || data.isCOD is bool) &&
              (!('codAmount' in data) || data.codAmount is number) &&
              (!('groupTag' in data) || data.groupTag is string) &&
-             (!('folder' in data) || data.folder is string || data.folder == null);
+             (!('folder' in data) || data.folder is string || data.folder == null) &&
+             (!('addressNotes' in data) || data.addressNotes is string || data.addressNotes == null) &&
+             (!('isLocationVerified' in data) || data.isLocationVerified is bool);
     }
 
     function isValidFolder(data) {
       return data.keys().hasAll(['name', 'uid']) &&
+             data.keys().hasOnly(['name', 'uid', 'createdAt']) &&
              data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
              data.uid == request.auth.uid &&
              (!('createdAt' in data) || data.createdAt is number);
@@ -73,12 +91,27 @@ service cloud.firestore {
 
     function isValidProfile(data) {
       return data.keys().hasAll(['uid', 'riderName', 'courierCompany']) &&
+             data.keys().hasOnly([
+               'uid', 'riderName', 'courierCompany', 'email', 'phone',
+               'ratePerParcel', 'trialStartedAt', 'dailyScanCount',
+               'lastScanResetDate', 'monthlyScanCount', 'lastScanResetMonth',
+               'trialScansUsed', 'hasSeenOnboarding', 'isPro',
+               'subscriptionTier', 'expiryDate', 'subscriptionType', 'role'
+             ]) &&
              data.uid == request.auth.uid &&
              data.riderName is string && data.riderName.size() <= 100 &&
              data.courierCompany is string && data.courierCompany.size() <= 100 &&
+             (!('email' in data) || data.email is string) &&
+             (!('phone' in data) || data.phone is string) &&
+             (!('ratePerParcel' in data) || data.ratePerParcel is number) &&
              (!('isPro' in data) || data.isPro is bool) &&
              (!('subscriptionTier' in data) || data.subscriptionTier in ['free', 'lite', 'standard', 'ultimate']) &&
              (!('trialStartedAt' in data) || data.trialStartedAt is number) &&
+             (!('dailyScanCount' in data) || data.dailyScanCount is number) &&
+             (!('lastScanResetDate' in data) || data.lastScanResetDate is string) &&
+             (!('monthlyScanCount' in data) || data.monthlyScanCount is number) &&
+             (!('lastScanResetMonth' in data) || data.lastScanResetMonth is string) &&
+             (!('trialScansUsed' in data) || data.trialScansUsed is number) &&
              (!('expiryDate' in data) || data.expiryDate is number || data.expiryDate == null) &&
              (!('subscriptionType' in data) || data.subscriptionType is string || data.subscriptionType == null) &&
              (!('role' in data) || data.role is string) &&
@@ -106,7 +139,7 @@ service cloud.firestore {
       // Update: restrict to safe field subsets
       allow update: if (isOwner(userId) && isValidProfile(incoming()) && (
         // Basic info update (no subscription fields)
-        (incoming().diff(existing()).affectedKeys().hasOnly(['riderName', 'courierCompany', 'hasSeenOnboarding'])) ||
+        (incoming().diff(existing()).affectedKeys().hasOnly(['riderName', 'courierCompany', 'email', 'phone', 'ratePerParcel', 'hasSeenOnboarding'])) ||
         // Trial claim — only allowed once (existing trialStartedAt must be 0/absent)
         (incoming().diff(existing()).affectedKeys().hasOnly(['trialStartedAt']) &&
          existing().get('trialStartedAt', 0) == 0 &&
@@ -135,7 +168,7 @@ service cloud.firestore {
         // Action: Reorganize (folder / group)
         (incoming().diff(existing()).affectedKeys().hasOnly(['folder', 'groupTag', 'sequenceNumber'])) ||
         // Action: Edit parcel data
-        (incoming().diff(existing()).affectedKeys().hasOnly(['recipientName', 'address', 'trackingNumber', 'isCOD', 'codAmount', 'lat', 'lng']))
+        (incoming().diff(existing()).affectedKeys().hasOnly(['recipientName', 'recipientPhone', 'address', 'trackingNumber', 'isCOD', 'codAmount', 'lat', 'lng', 'addressNotes', 'isLocationVerified']))
       )) || isAdmin();
 
       allow delete: if (isSignedIn() && existing().uid == request.auth.uid) || isAdmin();
