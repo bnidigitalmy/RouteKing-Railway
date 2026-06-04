@@ -95,6 +95,11 @@ function isValidOrigin(req: Request): boolean {
   const referer = (req.get('referer') || '').toLowerCase();
   const requestHost = (req.get('x-forwarded-host') || req.get('host') || '').split(':')[0].toLowerCase();
 
+  // Same-origin fetches do not always include Origin/Referer, especially
+  // through hosting proxies. Protected API routes still require Firebase
+  // Bearer tokens, so empty-origin requests can proceed to auth validation.
+  if (!origin && !referer) return true;
+
   return ALLOWED_DOMAINS.some(d =>
     origin.includes(d) ||
     referer.includes(d) ||
