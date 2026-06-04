@@ -93,7 +93,14 @@ function isValidOrigin(req: Request): boolean {
   if (process.env.NODE_ENV !== 'production') return true;
   const origin = (req.get('origin') || '').toLowerCase();
   const referer = (req.get('referer') || '').toLowerCase();
-  return ALLOWED_DOMAINS.some(d => origin.includes(d) || referer.includes(d));
+  const requestHost = (req.get('x-forwarded-host') || req.get('host') || '').split(':')[0].toLowerCase();
+
+  return ALLOWED_DOMAINS.some(d =>
+    origin.includes(d) ||
+    referer.includes(d) ||
+    requestHost === d ||
+    requestHost.endsWith(`.${d}`)
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -158,6 +165,7 @@ async function startServer() {
         "img-src 'self' data: blob: https://*.tile.openstreetmap.org https://maps.googleapis.com https://maps.gstatic.com https://lh3.googleusercontent.com https://www.gstatic.com https://ssl.gstatic.com https://www.google.com https://firebasestorage.googleapis.com",
         "connect-src 'self' https://*.googleapis.com wss://*.googleapis.com https://apis.google.com https://www.google.com https://www.gstatic.com https://nominatim.openstreetmap.org https://router.project-osrm.org https://toyyibpay.com https://dev.toyyibpay.com https://firebasestorage.googleapis.com",
         "frame-src https://accounts.google.com https://gen-lang-client-0580807845.firebaseapp.com https://www.google.com https://gen-lang-client-0580807845.web.app",
+        "worker-src 'self' blob:",
         "object-src 'none'",
         "base-uri 'self'",
       ].join('; ')
