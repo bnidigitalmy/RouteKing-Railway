@@ -15,8 +15,24 @@ import { GoogleGenAI, Type } from "@google/genai";
 const firebaseConfigPath = path.join(process.cwd(), 'firebase-applet-config.json');
 const firebaseConfig = JSON.parse(fs.readFileSync(firebaseConfigPath, 'utf8'));
 
-// Initialize Firebase Admin (uses default service account on Cloud Run)
-const firebaseApp = admin.apps.length ? admin.app() : admin.initializeApp();
+function getFirebaseAdminOptions(): admin.AppOptions | undefined {
+  const rawServiceAccount = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+  if (!rawServiceAccount) return undefined;
+
+  try {
+    const serviceAccount = JSON.parse(rawServiceAccount) as admin.ServiceAccount;
+    return {
+      credential: admin.credential.cert(serviceAccount),
+    };
+  } catch (error) {
+    console.error("Invalid FIREBASE_SERVICE_ACCOUNT_JSON:", error instanceof Error ? error.message : "unknown");
+    throw new Error("FIREBASE_SERVICE_ACCOUNT_JSON must be valid Firebase service account JSON.");
+  }
+}
+
+// Cloud Run can use Application Default Credentials. Railway needs
+// FIREBASE_SERVICE_ACCOUNT_JSON because it runs outside Google Cloud.
+const firebaseApp = admin.apps.length ? admin.app() : admin.initializeApp(getFirebaseAdminOptions());
 const databaseId = firebaseConfig.firestoreDatabaseId || '(default)';
 const db = getFirestore(firebaseApp, databaseId);
 
