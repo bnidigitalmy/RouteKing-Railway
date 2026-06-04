@@ -28,8 +28,16 @@ FIREBASE_SERVICE_ACCOUNT_JSON={"type":"service_account","project_id":"..."}
 2. Create a new Railway project from that GitHub repo.
 3. Add the variables above in Railway.
 4. Deploy and test the Railway temp URL first.
-5. Update `APP_URL`, `PUBLIC_URL`, and `ALLOWED_DOMAINS` after adding a custom domain.
-6. Point `app.routeking.my` to Railway only after login, scan, map, and payment are verified.
+5. Add the Railway temp domain in Firebase Auth authorized domains.
+6. Update `APP_URL`, `PUBLIC_URL`, and `ALLOWED_DOMAINS` after adding a custom domain.
+7. Point `app.routeking.my` to Railway only after login, scan, map, and payment are verified.
+
+## Domain Checklist
+
+- Railway temp URL must be included in `APP_URL`, `PUBLIC_URL`, and `ALLOWED_DOMAINS`.
+- Firebase Auth must authorize the Railway temp domain and later `app.routeking.my`.
+- If Google Maps API keys are HTTP-referrer restricted, add the Railway temp domain and later `app.routeking.my`.
+- ToyyibPay return/callback URLs are generated from `PUBLIC_URL`, so update it before live payment testing.
 
 ## Firebase Service Account
 
