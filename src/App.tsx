@@ -57,10 +57,16 @@ const TIER_LIMITS = {
 const TRIAL_SCAN_LIMIT = 50;
 
 const MAIN_DOMAIN = 'routeking.my';
+const HOSTED_APP_DOMAIN_SUFFIXES = ['.run.app', '.up.railway.app'];
+
+const isHostedAppDomain = (hostname: string) => (
+  HOSTED_APP_DOMAIN_SUFFIXES.some(suffix => hostname.endsWith(suffix))
+);
 
 export default function App() {
-  const isRootDomain = window.location.hostname === MAIN_DOMAIN || window.location.hostname === `www.${MAIN_DOMAIN}`;
-  const isAppSubdomain = window.location.hostname.startsWith('app.') || window.location.hostname === 'localhost' || window.location.hostname.includes('ais-dev');
+  const hostname = window.location.hostname;
+  const isRootDomain = hostname === MAIN_DOMAIN || hostname === `www.${MAIN_DOMAIN}`;
+  const isAppSubdomain = hostname.startsWith('app.') || hostname === 'localhost' || hostname.includes('ais-dev') || isHostedAppDomain(hostname);
   const isMarketingMode = isRootDomain && !isAppSubdomain;
   
   const [user, setUser] = useState<User | null>(null);
@@ -1002,8 +1008,7 @@ export default function App() {
   }
 
   // Handle domains and subdomains
-  const hostname = window.location.hostname;
-  const isAppDomain = isAppSubdomain || hostname.includes('.run.app');
+  const isAppDomain = isAppSubdomain;
 
   // If we are NOT on the app domain, only show the Landing page with a redirect button
   if (!isAppDomain && hostname !== 'localhost') {
