@@ -51,6 +51,7 @@ const ALLOWED_DOMAINS: string[] = (
 
 const VALID_TIERS = new Set(['lite', 'standard', 'ultimate']);
 const VALID_TYPES = new Set(['monthly', 'yearly']);
+const GEMINI_OCR_MODEL = (process.env.GEMINI_OCR_MODEL || 'gemini-2.5-flash').replace(/['"]/g, '').trim();
 
 // Server-authoritative pricing (sen / RM × 100)
 const TIER_AMOUNTS: Record<string, number> = {
@@ -285,7 +286,7 @@ async function startServer() {
     try {
       const ai = new GoogleGenAI({ apiKey: geminiKey });
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash-lite',
+        model: GEMINI_OCR_MODEL,
         contents: {
           parts: [
             {

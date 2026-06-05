@@ -14,6 +14,7 @@ PUBLIC_URL=https://your-railway-temp-url.up.railway.app
 ALLOWED_DOMAINS=your-railway-temp-url.up.railway.app,routeking.my,app.routeking.my,www.routeking.my
 
 GEMINI_API_KEY=
+GEMINI_OCR_MODEL=gemini-2.5-flash
 GOOGLE_MAPS_API_KEY=
 TOYYIBPAY_SECRET_KEY=
 TOYYIBPAY_CATEGORY_CODE=
