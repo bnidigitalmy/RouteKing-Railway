@@ -12,6 +12,7 @@ NODE_ENV=production
 APP_URL=https://your-railway-temp-url.up.railway.app
 PUBLIC_URL=https://your-railway-temp-url.up.railway.app
 ALLOWED_DOMAINS=your-railway-temp-url.up.railway.app,routeking.my,app.routeking.my,www.routeking.my
+RAILWAY_PUBLIC_DOMAIN=your-railway-temp-url.up.railway.app
 
 GEMINI_API_KEY=
 GEMINI_OCR_MODEL=gemini-2.5-flash

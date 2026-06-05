@@ -42,11 +42,24 @@ const db = getFirestore(firebaseApp, databaseId);
 
 // Domains allowed to make requests and receive redirects.
 // Set ALLOWED_DOMAINS env var as comma-separated list in production.
-const ALLOWED_DOMAINS: string[] = (
-  process.env.ALLOWED_DOMAINS || 'routeking.my,app.routeking.my,www.routeking.my'
-)
-  .split(',')
-  .map(d => d.trim().toLowerCase())
+function normalizeHost(value: string): string {
+  const trimmed = value.trim().toLowerCase();
+  if (!trimmed) return '';
+
+  try {
+    return new URL(trimmed.includes('://') ? trimmed : `https://${trimmed}`).hostname;
+  } catch {
+    return trimmed.replace(/^https?:\/\//, '').split('/')[0].split(':')[0];
+  }
+}
+
+const ALLOWED_DOMAINS: string[] = [
+  process.env.ALLOWED_DOMAINS || 'routeking.my,app.routeking.my,www.routeking.my',
+  process.env.RAILWAY_PUBLIC_DOMAIN || '',
+  process.env.RAILWAY_STATIC_URL || '',
+]
+  .flatMap(d => d.split(','))
+  .map(normalizeHost)
   .filter(Boolean);
 
 const VALID_TIERS = new Set(['lite', 'standard', 'ultimate']);
@@ -90,22 +103,38 @@ function isRateLimited(uid: string, max = 5, windowMs = 60 * 60 * 1000): boolean
 // ---------------------------------------------------------------------------
 // CSRF / Origin validation
 // ---------------------------------------------------------------------------
+function hostMatches(host: string, allowedHost: string): boolean {
+  return host === allowedHost || host.endsWith(`.${allowedHost}`);
+}
+
+function hostFromHeaderUrl(value: string): string {
+  if (!value) return '';
+
+  try {
+    return new URL(value).hostname.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
 function isValidOrigin(req: Request): boolean {
   if (process.env.NODE_ENV !== 'production') return true;
   const origin = (req.get('origin') || '').toLowerCase();
   const referer = (req.get('referer') || '').toLowerCase();
-  const requestHost = (req.get('x-forwarded-host') || req.get('host') || '').split(':')[0].toLowerCase();
+  const requestHost = normalizeHost(req.get('x-forwarded-host') || req.get('host') || '');
+  const originHost = hostFromHeaderUrl(origin);
+  const refererHost = hostFromHeaderUrl(referer);
 
   // Same-origin fetches do not always include Origin/Referer, especially
   // through hosting proxies. Protected API routes still require Firebase
   // Bearer tokens, so empty-origin requests can proceed to auth validation.
   if (!origin && !referer) return true;
+  if (requestHost && (originHost === requestHost || refererHost === requestHost)) return true;
 
   return ALLOWED_DOMAINS.some(d =>
-    origin.includes(d) ||
-    referer.includes(d) ||
-    requestHost === d ||
-    requestHost.endsWith(`.${d}`)
+    (originHost && hostMatches(originHost, d)) ||
+    (refererHost && hostMatches(refererHost, d)) ||
+    (requestHost && hostMatches(requestHost, d))
   );
 }
 
@@ -122,8 +151,8 @@ function getSafeAppUrl(req: Request): string {
   if (publicUrl) return publicUrl;
 
   // Derive from request only when host is in the allowlist
-  const requestHost = (req.get('x-forwarded-host') || req.get('host') || '').split(':')[0].toLowerCase();
-  if (ALLOWED_DOMAINS.some(d => requestHost === d || requestHost.endsWith(`.${d}`))) {
+  const requestHost = normalizeHost(req.get('x-forwarded-host') || req.get('host') || '');
+  if (ALLOWED_DOMAINS.some(d => hostMatches(requestHost, d))) {
     const proto = req.get('x-forwarded-proto') || 'https';
     return `${proto}://${req.get('x-forwarded-host') || req.get('host')}`;
   }
