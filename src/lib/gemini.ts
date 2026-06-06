@@ -2,6 +2,14 @@ import { auth, db, doc, getDoc, setDoc } from "../firebase";
 import { withRetry } from "./utils";
 
 const isDev = import.meta.env.DEV;
+const GEMINI_QUOTA_ERROR_CODE = 'GEMINI_QUOTA_OR_RATE_LIMIT';
+const GEMINI_QUOTA_ERROR_MESSAGE =
+  "Had penggunaan (Quota) Gemini anda telah tamat atau terlalu laju. Sila tunggu sebentar atau semak baki kredit di Google AI Studio.";
+
+type ApiError = Error & {
+  status?: number;
+  code?: string;
+};
 
 function log(...args: unknown[]) {
   if (isDev) console.log(...args);
@@ -20,6 +28,25 @@ const MY_BOUNDS = { latMin: 0.8, latMax: 7.5, lngMin: 99.5, lngMax: 119.5 };
 function isWithinMalaysia(lat: number, lng: number): boolean {
   return lat >= MY_BOUNDS.latMin && lat <= MY_BOUNDS.latMax &&
          lng >= MY_BOUNDS.lngMin && lng <= MY_BOUNDS.lngMax;
+}
+
+function createApiError(message: string, status?: number, code?: string): ApiError {
+  const error = new Error(message) as ApiError;
+  error.status = status;
+  error.code = code;
+  return error;
+}
+
+export function isGeminiQuotaError(error: any): boolean {
+  const message = String(error?.message || '').toLowerCase();
+  return error?.status === 429 ||
+         error?.code === GEMINI_QUOTA_ERROR_CODE ||
+         message.includes('429') ||
+         message.includes('resource_exhausted') ||
+         message.includes('quota') ||
+         message.includes('kuota') ||
+         message.includes('rate limit') ||
+         message.includes('terlalu laju');
 }
 
 export async function extractParcelInfo(base64Image: string) {
@@ -41,22 +68,34 @@ export async function extractParcelInfo(base64Image: string) {
 
       const data = await response.json().catch(() => null);
       if (!response.ok) {
-        throw new Error(data?.error || "Gagal membaca label melalui Gemini OCR.");
+        throw createApiError(
+          data?.error || "Gagal membaca label melalui Gemini OCR.",
+          response.status,
+          data?.code
+        );
       }
       return data;
     } catch (error: any) {
-      if (
-        error?.message?.includes('429') ||
-        error?.message?.includes('RESOURCE_EXHAUSTED') ||
-        error?.message?.toLowerCase().includes('quota')
-      ) {
-        throw new Error(
-          "Had penggunaan (Quota) Gemini anda telah tamat atau terlalu laju. Sila tunggu sebentar atau semak baki kredit di Google AI Studio."
-        );
+      if (isGeminiQuotaError(error)) {
+        throw createApiError(GEMINI_QUOTA_ERROR_MESSAGE, 429, GEMINI_QUOTA_ERROR_CODE);
       }
       throw error;
     }
-  }, { maxRetries: 2, initialDelay: 2000 });
+  }, {
+    maxRetries: 2,
+    initialDelay: 2000,
+    retryOn: (error: any) => {
+      if (isGeminiQuotaError(error)) return false;
+
+      const status = error?.status || error?.response?.status;
+      const message = String(error?.message || '').toLowerCase();
+
+      return (typeof status === 'number' && status >= 500) ||
+             message.includes('fetch') ||
+             message.includes('aborted') ||
+             message.includes('network');
+    },
+  });
 }
 
 export interface GeoResult {

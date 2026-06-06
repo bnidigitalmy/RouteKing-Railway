@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { Camera, Upload, Loader2, X, Banknote, MapPin, Hash, CheckCircle, User as UserIcon, Folder, Edit2, RefreshCw, Phone, Zap, ZapOff, Image as ImageIcon, Trash2, Play, RotateCcw, Layers } from 'lucide-react';
-import { extractParcelInfo } from '../lib/gemini';
+import { extractParcelInfo, isGeminiQuotaError } from '../lib/gemini';
 import { cn, hapticFeedback } from '../lib/utils';
 import { Parcel } from '../types';
 
@@ -94,6 +94,20 @@ const sanitizeValue = (val: any) => {
     return '';
   }
   return String(val).trim();
+};
+
+const formatScanError = (err: any) => {
+  const message = err?.message || "Gagal membaca label.";
+  const lower = String(message).toLowerCase();
+  const shouldAddImageHint = !isGeminiQuotaError(err) &&
+    !lower.includes('sudah ada') &&
+    !lower.includes('duplicate') &&
+    !lower.includes('had scan') &&
+    !lower.includes('langgan');
+
+  return shouldAddImageHint
+    ? `${message} Pastikan gambar label terang dan jelas.`
+    : message;
 };
 
 export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan', quota }: ScannerProps) {
@@ -320,8 +334,7 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan', quota }: S
     } catch (err: any) {
       playErrorSound(); // Play error sound on extraction or duplicate error
       hapticFeedback('error');
-      const errMsg = err?.message || "Gagal membaca label.";
-      setError(`${errMsg} Pastikan gambar label terang dan jelas.`);
+      setError(formatScanError(err));
       console.error("Scanner Error:", err);
     } finally {
       setIsScanning(false);

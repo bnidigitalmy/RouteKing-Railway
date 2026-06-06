@@ -66,6 +66,9 @@ const ALLOWED_DOMAINS: string[] = [
 const VALID_TIERS = new Set(['lite', 'standard', 'ultimate']);
 const VALID_TYPES = new Set(['monthly', 'yearly']);
 const GEMINI_OCR_MODEL = (process.env.GEMINI_OCR_MODEL || 'gemini-2.5-flash').replace(/['"]/g, '').trim();
+const GEMINI_QUOTA_ERROR_CODE = 'GEMINI_QUOTA_OR_RATE_LIMIT';
+const GEMINI_QUOTA_ERROR_MESSAGE =
+  "Had penggunaan (Quota) Gemini anda telah tamat atau terlalu laju. Sila tunggu sebentar atau semak baki kredit di Google AI Studio.";
 
 // Server-authoritative pricing (sen / RM × 100)
 const TIER_AMOUNTS: Record<string, number> = {
@@ -99,6 +102,61 @@ function isRateLimited(uid: string, max = 5, windowMs = 60 * 60 * 1000): boolean
   if (entry.count >= max) return true;
   entry.count++;
   return false;
+}
+
+function redactSensitive(value: string): string {
+  return value.replace(/AIza[0-9A-Za-z\-_]{20,}/g, 'AIza...[redacted]');
+}
+
+function getGeminiErrorDetails(error: any): { status?: number; code: string; message: string } {
+  const statusValue =
+    error?.status ??
+    error?.response?.status ??
+    error?.error?.code ??
+    error?.cause?.status;
+  const status = Number(statusValue) || undefined;
+  const code = String(
+    error?.code ||
+    error?.response?.data?.error?.status ||
+    error?.error?.status ||
+    ''
+  );
+  const message = redactSensitive(String(
+    error?.message ||
+    error?.response?.data?.error?.message ||
+    error?.error?.message ||
+    ''
+  ));
+
+  return { status, code, message };
+}
+
+function isGeminiQuotaError(error: any): boolean {
+  const details = getGeminiErrorDetails(error);
+  const code = details.code.toUpperCase();
+  const message = details.message.toLowerCase();
+
+  return details.status === 429 ||
+    code.includes('RESOURCE_EXHAUSTED') ||
+    code.includes('QUOTA') ||
+    message.includes('429') ||
+    message.includes('resource_exhausted') ||
+    message.includes('quota') ||
+    message.includes('rate limit');
+}
+
+function getGeminiKeyConfig(): { key: string; source: 'GEMINI_API_KEY' | 'CUSTOM_GEMINI_KEY' | 'none' } {
+  const rawKey = process.env.GEMINI_API_KEY || process.env.CUSTOM_GEMINI_KEY || '';
+  const source = process.env.GEMINI_API_KEY
+    ? 'GEMINI_API_KEY'
+    : process.env.CUSTOM_GEMINI_KEY
+      ? 'CUSTOM_GEMINI_KEY'
+      : 'none';
+
+  return {
+    key: rawKey.replace(/['"]/g, '').trim(),
+    source,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -353,9 +411,12 @@ async function startServer() {
       return res.status(400).json({ error: "Valid base64 image data URL required" });
     }
 
-    const geminiKey = (process.env.CUSTOM_GEMINI_KEY || process.env.GEMINI_API_KEY || '').replace(/['"]/g, '').trim();
+    const { key: geminiKey, source: geminiKeySource } = getGeminiKeyConfig();
     if (!geminiKey || geminiKey.length < 10 || geminiKey === 'MY_GEMINI_API_KEY') {
-      return res.status(503).json({ error: "Gemini OCR not configured" });
+      return res.status(503).json({
+        error: "Gemini OCR not configured",
+        code: "GEMINI_NOT_CONFIGURED",
+      });
     }
 
     const mimeType = image.split(';')[0].split(':')[1] || 'image/jpeg';
@@ -394,18 +455,33 @@ async function startServer() {
       });
 
       if (!response.text) {
-        return res.status(422).json({ error: "Tiada teks dikesan dalam gambar." });
+        return res.status(422).json({
+          error: "Tiada teks dikesan dalam gambar.",
+          code: "OCR_EMPTY_RESPONSE",
+        });
       }
 
       return res.json(JSON.parse(response.text));
     } catch (error: any) {
-      const message = String(error?.message || '');
-      if (message.includes('429') || message.includes('RESOURCE_EXHAUSTED') || message.toLowerCase().includes('quota')) {
+      const details = getGeminiErrorDetails(error);
+      console.error("Gemini OCR failed:", {
+        model: GEMINI_OCR_MODEL,
+        keySource: geminiKeySource,
+        status: details.status || "unknown",
+        code: details.code || "unknown",
+        message: details.message.slice(0, 500) || "unknown",
+      });
+
+      if (isGeminiQuotaError(error)) {
         return res.status(429).json({
-          error: "Had penggunaan (Quota) Gemini anda telah tamat atau terlalu laju. Sila tunggu sebentar atau semak baki kredit di Google AI Studio.",
+          error: GEMINI_QUOTA_ERROR_MESSAGE,
+          code: GEMINI_QUOTA_ERROR_CODE,
         });
       }
-      return res.status(502).json({ error: "Gagal membaca label melalui Gemini OCR." });
+      return res.status(502).json({
+        error: "Gagal membaca label melalui Gemini OCR.",
+        code: "GEMINI_OCR_FAILED",
+      });
     }
   });
 
