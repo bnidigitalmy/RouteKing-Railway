@@ -18,6 +18,8 @@ interface ParcelCardProps {
 export const ParcelCard = memo(function ParcelCard({ parcel, profile, onStatusChange, onMoveClick, onViewPOD }: ParcelCardProps) {
   const [showHantarConfirm, setShowHantarConfirm] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
+  const [copyingLink, setCopyingLink] = useState(false);
 
   const openNavigation = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -71,6 +73,33 @@ export const ParcelCard = memo(function ParcelCard({ parcel, profile, onStatusCh
     };
 
     getPinLocationLink(parcel.id).then(buildAndOpen).catch(() => buildAndOpen(null));
+  };
+
+  // Copy the pin-location link so the rider can share it anywhere (e.g. when the
+  // parcel has no phone number, or via SMS / Telegram instead of WhatsApp).
+  const copyLocationLink = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (copyingLink) return;
+    setCopyingLink(true);
+    try {
+      const url = await getPinLocationLink(parcel.id);
+      if (!url) {
+        alert('Link lokasi tidak tersedia buat masa ini. Pastikan anda online & ciri ini telah diaktifkan.');
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(url);
+        setCopiedLink(true);
+        setTimeout(() => setCopiedLink(false), 2000);
+      } catch {
+        // Clipboard blocked (older browser / insecure context) — show it to copy manually.
+        window.prompt('Salin link lokasi ini:', url);
+      }
+    } catch {
+      alert('Gagal mendapatkan link. Sila cuba lagi.');
+    } finally {
+      setCopyingLink(false);
+    }
   };
 
   const openWaze = (e: React.MouseEvent) => {
@@ -289,7 +318,25 @@ export const ParcelCard = memo(function ParcelCard({ parcel, profile, onStatusCh
                 </button>
               </div>
             )}
-            
+
+            {parcel.status !== 'delivered' && (
+              <button
+                onPointerDown={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={copyLocationLink}
+                disabled={copyingLink}
+                className="col-span-2 flex items-center justify-center gap-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-black py-2.5 rounded-xl text-xs transition-all active:scale-95 border border-emerald-100 disabled:opacity-60 mb-1"
+              >
+                {copiedLink ? (
+                  <><CheckCircle2 size={14} /> Link Disalin!</>
+                ) : copyingLink ? (
+                  <><RefreshCw size={14} className="animate-spin" /> Menyediakan...</>
+                ) : (
+                  <><Copy size={14} /> Copy Link Lokasi</>
+                )}
+              </button>
+            )}
+
             <button
               onPointerDown={(e) => e.stopPropagation()}
               onMouseDown={(e) => e.stopPropagation()}
