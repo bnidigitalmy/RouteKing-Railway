@@ -1,26 +1,43 @@
-import {StrictMode} from 'react';
-import {createRoot} from 'react-dom/client';
+import { StrictMode } from 'react';
+import { createRoot } from 'react-dom/client';
 import { registerSW } from 'virtual:pwa-register';
-import App from './App.tsx';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import './index.css';
 
-// Register service worker for PWA
-registerSW({
-  onNeedRefresh() {
-    // We will let the user refresh manually or handle via a dedicated UI if needed later
-    // For now, removing the confirm loop to prevent the 8-10x refresh issue
-    console.log('Versi baru tersedia.');
-  },
-  onOfflineReady() {
-    console.log('Aplikasi sedia untuk kegunaan offline');
-  },
-});
+const root = createRoot(document.getElementById('root')!);
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <ErrorBoundary>
-      <App />
-    </ErrorBoundary>
-  </StrictMode>,
-);
+// Public customer pin-location page — kept on its own light bundle (no Firebase,
+// no full app) so recipients on slow connections load it instantly.
+if (window.location.pathname.startsWith('/pin/')) {
+  const token = decodeURIComponent(window.location.pathname.slice('/pin/'.length));
+  import('./components/PinLocation').then(({ PinLocation }) => {
+    root.render(
+      <StrictMode>
+        <ErrorBoundary>
+          <PinLocation token={token} />
+        </ErrorBoundary>
+      </StrictMode>,
+    );
+  });
+} else {
+  // Register service worker for PWA (main app only)
+  registerSW({
+    onNeedRefresh() {
+      // Let the user refresh manually to avoid the previous refresh-loop issue.
+      console.log('Versi baru tersedia.');
+    },
+    onOfflineReady() {
+      console.log('Aplikasi sedia untuk kegunaan offline');
+    },
+  });
+
+  import('./App').then(({ default: App }) => {
+    root.render(
+      <StrictMode>
+        <ErrorBoundary>
+          <App />
+        </ErrorBoundary>
+      </StrictMode>,
+    );
+  });
+}

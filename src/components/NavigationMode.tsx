@@ -4,6 +4,7 @@ import { MapContainer, TileLayer, Marker, useMap } from 'react-leaflet';
 import { X, Map as MapIcon, Navigation, CheckCircle, Package, Banknote, MessageSquare, Phone, Camera, Loader2, MapPin, Edit2, Save, Check, AlertCircle } from 'lucide-react';
 import L from 'leaflet';
 import { cn, getGoogleMapsLetter } from '../lib/utils';
+import { getPinLocationLink } from '../lib/locationLink';
 
 // Fix Leaflet's default icon path issues in React
 delete (L.Icon.Default.prototype as any)._getIconUrl;
@@ -196,7 +197,7 @@ export function NavigationMode({ parcels, profile, onMarkDelivered, onUpdateParc
 
   const sendWhatsApp = () => {
     if (!currentParcel.recipientPhone) return;
-    
+
     let phone = currentParcel.recipientPhone.replace(/\D/g, '');
     if (phone.startsWith('0')) {
       phone = '6' + phone;
@@ -206,18 +207,30 @@ export function NavigationMode({ parcels, profile, onMarkDelivered, onUpdateParc
 
     const courierName = profile?.courierCompany || 'SPX Express';
     const tracking = currentParcel.trackingNumber;
-    
-    let messageText = `Hai! Saya rider ${courierName}. Parcel anda [${tracking}] akan sampai dalam 10-15 minit! 📦\n\n`;
-    
-    if (currentParcel.isCOD && currentParcel.codAmount) {
-      messageText += `Ini adalah parcel COD (RM${currentParcel.codAmount.toFixed(2)}). Boleh bayar guna Cash atau QR DuitNow ya. 💵\n\n`;
-    }
-    
-    messageText += `Sila sedia ya. Terima kasih! 🙏`;
-    
-    const message = encodeURIComponent(messageText);
-    const url = `https://wa.me/${phone}?text=${message}`;
-    window.open(url, '_blank');
+
+    // Open the WhatsApp tab synchronously to keep the user gesture (avoids the
+    // mobile popup blocker), then fill the URL once the pin link is ready.
+    const waWindow = window.open('', '_blank');
+
+    const buildAndOpen = (pinUrl: string | null) => {
+      let messageText = `Hai! Saya rider ${courierName}. Parcel anda [${tracking}] akan sampai dalam 10-15 minit! 📦\n\n`;
+
+      if (currentParcel.isCOD && currentParcel.codAmount) {
+        messageText += `Ini adalah parcel COD (RM${currentParcel.codAmount.toFixed(2)}). Boleh bayar guna Cash atau QR DuitNow ya. 💵\n\n`;
+      }
+
+      if (pinUrl) {
+        messageText += `📍 Sila klik link ni & benarkan akses lokasi supaya kami dapat lokasi tepat rumah anda (elak rider sesat / lewat):\n${pinUrl}\n\n`;
+      }
+
+      messageText += `Sila sedia ya. Terima kasih! 🙏`;
+
+      const url = `https://wa.me/${phone}?text=${encodeURIComponent(messageText)}`;
+      if (waWindow) waWindow.location.href = url;
+      else window.open(url, '_blank');
+    };
+
+    getPinLocationLink(currentParcel.id).then(buildAndOpen).catch(() => buildAndOpen(null));
   };
 
   return (

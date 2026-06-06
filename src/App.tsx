@@ -141,8 +141,10 @@ export default function App() {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
-      if (currentUser && !riderName) {
-        setRiderName(currentUser.displayName || '');
+      // Prefill rider name from the Google display name only if still empty.
+      // Functional update avoids a stale `riderName` closure (effect has [] deps).
+      if (currentUser) {
+        setRiderName(prev => prev || currentUser.displayName || '');
       }
       setIsAuthLoading(false);
     });
@@ -319,7 +321,10 @@ export default function App() {
   }, [user]);
 
   const getAddressHash = (address: string) => {
-    return address.toLowerCase().replace(/[^a-z0-9]/g, '');
+    // Cap length so pathologically long addresses can't produce an oversized
+    // Firestore document ID. 200 is far above any real address, so existing
+    // verified-address pins keep resolving to the same hash.
+    return address.toLowerCase().replace(/[^a-z0-9]/g, '').substring(0, 200);
   };
 
   const handleScan = async (
@@ -411,18 +416,16 @@ export default function App() {
       return;
     }
 
-    const existing = parcels.find(p => p.trackingNumber === tracking);
-    
-    if (existing) {
-      // Throw error so Scanner can catch and display it
+    // Reject duplicates — throw so the Scanner can catch and display the error.
+    if (parcels.some(p => p.trackingNumber === tracking)) {
       const errorMsg = `Tracking number ${tracking} sudah ada dalam senarai!`;
       setError(errorMsg);
       throw new Error(errorMsg);
     }
 
-    const parcelId = existing ? existing.id : (typeof crypto.randomUUID === 'function' 
-      ? crypto.randomUUID() 
-      : Date.now().toString(36) + Math.random().toString(36).substring(2));
+    const parcelId = typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : Date.now().toString(36) + Math.random().toString(36).substring(2);
 
     const parcelData: any = {
       id: parcelId,
@@ -430,8 +433,8 @@ export default function App() {
       recipientPhone: sanitize(data.recipientPhone),
       address: data.address,
       trackingNumber: tracking,
-      status: existing ? existing.status : 'pending',
-      sequenceNumber: existing ? existing.sequenceNumber : parcels.length + 1,
+      status: 'pending',
+      sequenceNumber: parcels.length + 1,
       lat: coords.lat,
       lng: coords.lng,
       isLocationVerified: isVerified,
@@ -1015,7 +1018,7 @@ export default function App() {
     return (
       <Suspense fallback={<div className="min-h-screen bg-white" />}>
         <LandingPage 
-          onStart={() => window.location.href = `https://app.${hostname}`}
+          onStart={() => window.location.href = `https://app.${MAIN_DOMAIN}`}
           isLoggingIn={false}
           error={null}
           onClearError={() => {}}

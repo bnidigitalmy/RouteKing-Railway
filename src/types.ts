@@ -20,6 +20,7 @@ export interface Parcel {
   folder?: string;
   addressNotes?: string;
   isLocationVerified?: boolean;
+  isCustomerPinned?: boolean; // location shared by the recipient via pin link
   uid: string; // Firebase User ID
 }
 

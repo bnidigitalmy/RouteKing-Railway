@@ -9,6 +9,7 @@ import cors from "cors";
 import admin from "firebase-admin";
 import { getFirestore } from "firebase-admin/firestore";
 import fs from "fs";
+import crypto from "crypto";
 import { GoogleGenAI, Type } from "@google/genai";
 
 // Load Firebase Config
@@ -172,6 +173,57 @@ async function verifyFirebaseBearer(req: Request): Promise<admin.auth.DecodedIdT
 
   try {
     return await admin.auth().verifyIdToken(match[1]);
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Customer location-pin tokens — HMAC-signed, stateless (no DB lookup needed)
+// ---------------------------------------------------------------------------
+const MY_BOUNDS = { latMin: 0.8, latMax: 7.5, lngMin: 99.5, lngMax: 119.5 };
+function isWithinMalaysia(lat: number, lng: number): boolean {
+  return lat >= MY_BOUNDS.latMin && lat <= MY_BOUNDS.latMax &&
+         lng >= MY_BOUNDS.lngMin && lng <= MY_BOUNDS.lngMax;
+}
+
+// These MUST match the client-side hashes so cache entries the server writes
+// are found later by the app (see src/lib/gemini.ts and src/App.tsx).
+function geocacheHash(address: string): string {
+  return address.toLowerCase().replace(/[^a-z0-9]/g, '_').substring(0, 100);
+}
+function verifiedAddressHash(address: string): string {
+  return address.toLowerCase().replace(/[^a-z0-9]/g, '').substring(0, 200);
+}
+
+function base64url(buf: Buffer): string {
+  return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+const LOCATION_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+function signLocationToken(parcelId: string): string | null {
+  const secret = process.env.LOCATION_TOKEN_SECRET;
+  if (!secret) return null;
+  const payload = base64url(Buffer.from(JSON.stringify({ pid: parcelId, exp: Date.now() + LOCATION_TOKEN_TTL_MS })));
+  const sig = base64url(crypto.createHmac('sha256', secret).update(payload).digest());
+  return `${payload}.${sig}`;
+}
+
+function verifyLocationToken(token: unknown): string | null {
+  const secret = process.env.LOCATION_TOKEN_SECRET;
+  if (!secret || typeof token !== 'string') return null;
+  const parts = token.split('.');
+  if (parts.length !== 2) return null;
+  const [payload, sig] = parts;
+  const expected = base64url(crypto.createHmac('sha256', secret).update(payload).digest());
+  const sigBuf = Buffer.from(sig);
+  const expBuf = Buffer.from(expected);
+  if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) return null;
+  try {
+    const json = JSON.parse(Buffer.from(payload.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
+    if (!json || typeof json.pid !== 'string' || typeof json.exp !== 'number' || Date.now() > json.exp) return null;
+    return json.pid;
   } catch {
     return null;
   }
@@ -540,6 +592,129 @@ async function startServer() {
       return res.redirect('/?payment=pending');
     }
     return res.redirect('/?payment=failed');
+  });
+
+  // -------------------------------------------------------------------------
+  // Customer location pin — rider generates a shareable link for one parcel
+  // -------------------------------------------------------------------------
+  app.post("/api/parcel/location-link", async (req: Request, res: Response) => {
+    if (!isValidOrigin(req)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    const token = await verifyFirebaseBearer(req);
+    if (!token) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+    if (!process.env.LOCATION_TOKEN_SECRET) {
+      return res.status(503).json({ error: "Location sharing not configured" });
+    }
+
+    const { parcelId } = req.body;
+    if (!parcelId || typeof parcelId !== 'string' || parcelId.length > 128) {
+      return res.status(400).json({ error: "Invalid parcel" });
+    }
+
+    try {
+      const doc = await db.collection('parcels').doc(parcelId).get();
+      if (!doc.exists || (doc.data() as any).uid !== token.uid) {
+        return res.status(404).json({ error: "Parcel not found" });
+      }
+      const signed = signLocationToken(parcelId);
+      if (!signed) {
+        return res.status(503).json({ error: "Location sharing not configured" });
+      }
+      return res.json({ url: `${getSafeAppUrl(req)}/pin/${signed}` });
+    } catch (error) {
+      console.error("location-link error:", error instanceof Error ? error.message : 'unknown');
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // Public: minimal parcel info to render the pin page (the token IS the secret)
+  app.get("/api/parcel/location-info", async (req: Request, res: Response) => {
+    const pid = verifyLocationToken(firstValue(req.query.token));
+    if (!pid) {
+      return res.status(410).json({ error: "Link tidak sah atau telah luput." });
+    }
+    try {
+      const doc = await db.collection('parcels').doc(pid).get();
+      if (!doc.exists) {
+        return res.status(404).json({ error: "Parcel tidak dijumpai." });
+      }
+      const d = doc.data() as any;
+      return res.json({
+        trackingNumber: d.trackingNumber || '',
+        recipientName: d.recipientName || '',
+        alreadyPinned: d.isCustomerPinned === true,
+      });
+    } catch (error) {
+      console.error("location-info error:", error instanceof Error ? error.message : 'unknown');
+      return res.status(500).json({ error: "Ralat pelayan." });
+    }
+  });
+
+  // Public: customer submits their exact GPS location for a parcel
+  app.post("/api/parcel/location", async (req: Request, res: Response) => {
+    const { token, lat, lng } = req.body;
+    const pid = verifyLocationToken(token);
+    if (!pid) {
+      return res.status(410).json({ error: "Link tidak sah atau telah luput." });
+    }
+    if (typeof lat !== 'number' || typeof lng !== 'number' || Number.isNaN(lat) || Number.isNaN(lng)) {
+      return res.status(400).json({ error: "Koordinat tidak sah." });
+    }
+    if (!isWithinMalaysia(lat, lng)) {
+      return res.status(422).json({ error: "Lokasi di luar Malaysia. Sila pastikan GPS anda betul." });
+    }
+    if (isRateLimited(`pin_${pid}`, 10, 60 * 60 * 1000)) {
+      return res.status(429).json({ error: "Terlalu banyak percubaan. Sila cuba sebentar lagi." });
+    }
+
+    try {
+      const ref = db.collection('parcels').doc(pid);
+      const doc = await ref.get();
+      if (!doc.exists) {
+        return res.status(404).json({ error: "Parcel tidak dijumpai." });
+      }
+      const d = doc.data() as any;
+
+      await ref.update({
+        lat,
+        lng,
+        isLocationVerified: true,
+        isCustomerPinned: true,
+      });
+
+      // Make the app smarter: cache this verified location so the same address
+      // resolves instantly next time without hitting the geocoding APIs.
+      const address = typeof d.address === 'string' ? d.address : '';
+      const uid = typeof d.uid === 'string' ? d.uid : '';
+      if (address) {
+        const now = Date.now();
+        try {
+          await db.collection('geocache').doc(geocacheHash(address)).set(
+            { address, lat, lng, isApproximate: false, lastUpdated: now },
+            { merge: true }
+          );
+        } catch (e) {
+          console.error("geocache write failed:", e instanceof Error ? e.message : 'unknown');
+        }
+        if (uid) {
+          try {
+            await db.collection('users').doc(uid)
+              .collection('verified_addresses').doc(verifiedAddressHash(address))
+              .set({ address, lat, lng, lastUpdated: now }, { merge: true });
+          } catch (e) {
+            console.error("verified_addresses write failed:", e instanceof Error ? e.message : 'unknown');
+          }
+        }
+      }
+
+      return res.json({ ok: true });
+    } catch (error) {
+      console.error("Location pin error:", error instanceof Error ? error.message : 'unknown');
+      return res.status(500).json({ error: "Gagal menyimpan lokasi. Sila cuba lagi." });
+    }
   });
 
   // -------------------------------------------------------------------------

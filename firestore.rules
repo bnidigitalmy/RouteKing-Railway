@@ -55,7 +55,7 @@ service cloud.firestore {
                'scannedAt', 'deliveredAt', 'failedAt', 'failedReason',
                'failedPhotoUrl', 'podPhotoUrl', 'isCOD', 'codAmount',
                'groupTag', 'folder', 'addressNotes', 'isLocationVerified',
-               'uid'
+               'isCustomerPinned', 'uid'
              ]) &&
              data.id is string && data.id.size() <= 64 &&
              data.address is string && data.address.size() <= 1000 &&
@@ -78,7 +78,8 @@ service cloud.firestore {
              (!('groupTag' in data) || data.groupTag is string) &&
              (!('folder' in data) || data.folder is string || data.folder == null) &&
              (!('addressNotes' in data) || data.addressNotes is string || data.addressNotes == null) &&
-             (!('isLocationVerified' in data) || data.isLocationVerified is bool);
+             (!('isLocationVerified' in data) || data.isLocationVerified is bool) &&
+             (!('isCustomerPinned' in data) || data.isCustomerPinned is bool);
     }
 
     function isValidFolder(data) {
