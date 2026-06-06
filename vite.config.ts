@@ -90,5 +90,19 @@ export default defineConfig(({ mode }) => {
     server: {
       hmr: process.env.DISABLE_HMR !== 'true',
     },
+    build: {
+      rollupOptions: {
+        output: {
+          // Split heavy vendors so riders on mobile data don't download one
+          // giant chunk. Firebase, Leaflet maps and the animation lib are the
+          // three biggest dependencies and rarely change together.
+          manualChunks: {
+            firebase: ['firebase/app', 'firebase/auth', 'firebase/firestore', 'firebase/storage'],
+            maps: ['leaflet', 'react-leaflet'],
+            motion: ['motion'],
+          },
+        },
+      },
+    },
   };
 });

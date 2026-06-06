@@ -2,6 +2,7 @@ import React, { memo } from 'react';
 import { MapPin, Navigation, CheckCircle2, Circle, ExternalLink, Banknote, User as UserIcon, Folder, MoreVertical, Phone, MessageSquare, Copy, Image as ImageIcon, X, Edit2, RefreshCw, AlertCircle, Package } from 'lucide-react';
 import { Parcel, UserProfile } from '../types';
 import { cn, getGoogleMapsLetter } from '../lib/utils';
+import { getPinLocationLink } from '../lib/locationLink';
 import { motion, AnimatePresence } from 'motion/react';
 import { ConfirmationModal } from './ui/ConfirmationModal';
 import { useState } from 'react';
@@ -33,10 +34,10 @@ export const ParcelCard = memo(function ParcelCard({ parcel, profile, onStatusCh
   const sendWhatsApp = (e: React.MouseEvent) => {
     e.stopPropagation();
     if (!parcel.recipientPhone) return;
-    
+
     // Clean phone number (remove non-digits)
     let phone = parcel.recipientPhone.replace(/\D/g, '');
-    
+
     // Ensure it starts with 60 (Malaysia)
     if (phone.startsWith('0')) {
       phone = '6' + phone;
@@ -46,18 +47,30 @@ export const ParcelCard = memo(function ParcelCard({ parcel, profile, onStatusCh
 
     const courierName = profile?.courierCompany || 'SPX Express';
     const tracking = parcel.trackingNumber;
-    
-    let messageText = `Hai! Saya rider ${courierName}. Parcel anda [${tracking}] akan sampai dalam 10-15 minit! 📦\n\n`;
-    
-    if (parcel.isCOD && parcel.codAmount) {
-      messageText += `Ini adalah parcel COD (RM${parcel.codAmount.toFixed(2)}). Boleh bayar guna Cash atau QR DuitNow ya. 💵\n\n`;
-    }
-    
-    messageText += `Sila sedia ya. Terima kasih! 🙏`;
-    
-    const message = encodeURIComponent(messageText);
-    const url = `https://wa.me/${phone}?text=${message}`;
-    window.open(url, '_blank');
+
+    // Open the WhatsApp tab synchronously to keep the user gesture (avoids the
+    // mobile popup blocker), then fill the URL once the pin link is ready.
+    const waWindow = window.open('', '_blank');
+
+    const buildAndOpen = (pinUrl: string | null) => {
+      let messageText = `Hai! Saya rider ${courierName}. Parcel anda [${tracking}] akan sampai dalam 10-15 minit! 📦\n\n`;
+
+      if (parcel.isCOD && parcel.codAmount) {
+        messageText += `Ini adalah parcel COD (RM${parcel.codAmount.toFixed(2)}). Boleh bayar guna Cash atau QR DuitNow ya. 💵\n\n`;
+      }
+
+      if (pinUrl) {
+        messageText += `📍 Sila klik link ni & benarkan akses lokasi supaya kami dapat lokasi tepat rumah anda (elak rider sesat / lewat):\n${pinUrl}\n\n`;
+      }
+
+      messageText += `Sila sedia ya. Terima kasih! 🙏`;
+
+      const url = `https://wa.me/${phone}?text=${encodeURIComponent(messageText)}`;
+      if (waWindow) waWindow.location.href = url;
+      else window.open(url, '_blank');
+    };
+
+    getPinLocationLink(parcel.id).then(buildAndOpen).catch(() => buildAndOpen(null));
   };
 
   const openWaze = (e: React.MouseEvent) => {
@@ -190,7 +203,11 @@ export const ParcelCard = memo(function ParcelCard({ parcel, profile, onStatusCh
             {parcel.address}
           </h4>
 
-          {parcel.isLocationVerified && (
+          {parcel.isCustomerPinned ? (
+            <div className="mt-1 flex items-center gap-1 text-[10px] font-black text-green-600 uppercase tracking-widest">
+              <MapPin size={10} /> Lokasi Customer
+            </div>
+          ) : parcel.isLocationVerified && (
             <div className="mt-1 flex items-center gap-1 text-[10px] font-black text-blue-600 uppercase tracking-widest">
               <CheckCircle2 size={10} /> Pin Disahkan
             </div>
