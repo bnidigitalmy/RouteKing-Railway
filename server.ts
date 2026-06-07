@@ -69,6 +69,13 @@ const GEMINI_OCR_MODEL = (process.env.GEMINI_OCR_MODEL || 'gemini-2.5-flash').re
 const GEMINI_QUOTA_ERROR_CODE = 'GEMINI_QUOTA_OR_RATE_LIMIT';
 const GEMINI_QUOTA_ERROR_MESSAGE =
   "Had penggunaan (Quota) Gemini anda telah tamat atau terlalu laju. Sila tunggu sebentar atau semak baki kredit di Google AI Studio.";
+const TRIAL_SCAN_LIMIT = 50;
+const SCAN_TIER_LIMITS: Record<string, { daily: number; monthly: number }> = {
+  free: { daily: 30, monthly: 210 },
+  lite: { daily: 80, monthly: 2000 },
+  standard: { daily: 180, monthly: 4500 },
+  ultimate: { daily: 400, monthly: 10000 },
+};
 
 // Server-authoritative pricing (sen / RM × 100)
 const TIER_AMOUNTS: Record<string, number> = {
@@ -87,6 +94,17 @@ type PendingPayment = {
   status?: 'pending' | 'completed';
 };
 
+class HttpError extends Error {
+  status: number;
+  code: string;
+
+  constructor(status: number, code: string, message: string) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // In-memory rate limiter — 5 payment requests per UID per hour
 // ---------------------------------------------------------------------------
@@ -102,6 +120,56 @@ function isRateLimited(uid: string, max = 5, windowMs = 60 * 60 * 1000): boolean
   if (entry.count >= max) return true;
   entry.count++;
   return false;
+}
+
+function getMytPeriod(now = Date.now()): { today: string; month: string } {
+  const myt = new Date(now + 8 * 60 * 60 * 1000);
+  const today = myt.toISOString().split('T')[0];
+  return { today, month: today.substring(0, 7) };
+}
+
+function cleanString(value: unknown, maxLength: number): string {
+  if (value === null || value === undefined) return '';
+  const text = String(value).trim();
+  if (text.toLowerCase() === 'null' || text.toLowerCase() === 'undefined') return '';
+  return text.substring(0, maxLength);
+}
+
+function optionalCleanString(value: unknown, maxLength: number): string | null {
+  const text = cleanString(value, maxLength);
+  return text || null;
+}
+
+function finiteNumber(value: unknown, fallback = 0): number {
+  const n = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function isValidGeneratedId(value: unknown): value is string {
+  return typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= 128 &&
+    /^[a-zA-Z0-9_-]+$/.test(value);
+}
+
+function isActivePaidSubscription(profile: Record<string, any>, now = Date.now()): boolean {
+  return profile?.isPro === true &&
+    typeof profile?.expiryDate === 'number' &&
+    profile.expiryDate > now;
+}
+
+function isActiveLegacyTrial(profile: Record<string, any>, now = Date.now()): boolean {
+  return typeof profile?.trialScansUsed !== 'number' &&
+    typeof profile?.trialStartedAt === 'number' &&
+    profile.trialStartedAt > 0 &&
+    now - profile.trialStartedAt <= 7 * 24 * 60 * 60 * 1000;
+}
+
+function activeScanTier(profile: Record<string, any>, subscriptionActive: boolean): string {
+  const tier = String(profile?.subscriptionTier || '');
+  if (subscriptionActive && SCAN_TIER_LIMITS[tier]) return tier;
+  if (subscriptionActive) return 'standard';
+  return 'free';
 }
 
 function redactSensitive(value: string): string {
@@ -307,7 +375,7 @@ async function startServer() {
         "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://apis.google.com https://accounts.google.com https://www.gstatic.com https://www.google.com https://ssl.gstatic.com",
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com https://www.gstatic.com",
         "font-src 'self' https://fonts.gstatic.com https://www.gstatic.com",
-        "img-src 'self' data: blob: https://*.tile.openstreetmap.org https://maps.googleapis.com https://maps.gstatic.com https://lh3.googleusercontent.com https://www.gstatic.com https://ssl.gstatic.com https://www.google.com https://firebasestorage.googleapis.com",
+        "img-src 'self' data: blob: https://*.tile.openstreetmap.org https://maps.googleapis.com https://maps.gstatic.com https://mt0.google.com https://mt1.google.com https://mt2.google.com https://mt3.google.com https://lh3.googleusercontent.com https://www.gstatic.com https://ssl.gstatic.com https://www.google.com https://firebasestorage.googleapis.com",
         "connect-src 'self' https://*.googleapis.com wss://*.googleapis.com https://apis.google.com https://www.google.com https://www.gstatic.com https://nominatim.openstreetmap.org https://router.project-osrm.org https://toyyibpay.com https://dev.toyyibpay.com https://firebasestorage.googleapis.com",
         "frame-src https://accounts.google.com https://gen-lang-client-0580807845.firebaseapp.com https://www.google.com https://gen-lang-client-0580807845.web.app",
         "worker-src 'self' blob:",
@@ -392,6 +460,162 @@ async function startServer() {
 
     return true;
   }
+
+  // -------------------------------------------------------------------------
+  // Parcel scan creation - server-authoritative quota and trial enforcement
+  // -------------------------------------------------------------------------
+  app.post("/api/parcels/create", async (req: Request, res: Response) => {
+    if (!isValidOrigin(req)) {
+      return res.status(403).json({ error: "Forbidden", code: "FORBIDDEN_ORIGIN" });
+    }
+
+    const token = await verifyFirebaseBearer(req);
+    if (!token) {
+      return res.status(401).json({ error: "Authentication required", code: "AUTH_REQUIRED" });
+    }
+
+    const address = cleanString(req.body?.address, 1000);
+    const trackingNumber = cleanString(req.body?.trackingNumber, 100);
+    if (!address || !trackingNumber) {
+      return res.status(400).json({
+        error: "Alamat dan nombor tracking diperlukan.",
+        code: "INVALID_PARCEL",
+      });
+    }
+
+    const lat = finiteNumber(req.body?.lat, Number.NaN);
+    const lng = finiteNumber(req.body?.lng, Number.NaN);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || !isWithinMalaysia(lat, lng)) {
+      return res.status(400).json({
+        error: "Koordinat parcel tidak sah.",
+        code: "INVALID_COORDINATES",
+      });
+    }
+
+    const requestedId = req.body?.id;
+    const parcelId = isValidGeneratedId(requestedId) ? requestedId : crypto.randomUUID();
+    const now = Date.now();
+    const { today, month } = getMytPeriod(now);
+    const codAmount = Math.max(0, finiteNumber(req.body?.codAmount, 0));
+    const sequenceNumber = Math.max(1, Math.min(10000, Math.floor(finiteNumber(req.body?.sequenceNumber, 1))));
+
+    try {
+      let createdParcel: Record<string, unknown> | null = null;
+      let quota: Record<string, unknown> | null = null;
+
+      await db.runTransaction(async (tx) => {
+        const profileRef = db.collection('profiles').doc(token.uid);
+        const profileSnap = await tx.get(profileRef);
+        if (!profileSnap.exists) {
+          throw new HttpError(409, "PROFILE_REQUIRED", "Sila lengkapkan profil rider dahulu.");
+        }
+
+        const profile = profileSnap.data() || {};
+        const subscriptionActive = isActivePaidSubscription(profile, now);
+        const hasScanTrial = typeof profile.trialScansUsed === 'number';
+        const trialEligible = profile.isPro !== true;
+        const scanTrialActive = trialEligible && hasScanTrial && profile.trialScansUsed < TRIAL_SCAN_LIMIT;
+        const legacyTrialActive = trialEligible && isActiveLegacyTrial(profile, now);
+
+        if (!subscriptionActive && !scanTrialActive && !legacyTrialActive) {
+          throw new HttpError(
+            402,
+            "SUBSCRIPTION_REQUIRED",
+            "Had scan percubaan telah habis. Langgan RouteKing Pro untuk terus scan!"
+          );
+        }
+
+        const tier = activeScanTier(profile, subscriptionActive);
+        const limits = SCAN_TIER_LIMITS[tier] || SCAN_TIER_LIMITS.free;
+        const currentDailyCount = profile.lastScanResetDate === today ? finiteNumber(profile.dailyScanCount, 0) : 0;
+        const currentMonthlyCount = profile.lastScanResetMonth === month ? finiteNumber(profile.monthlyScanCount, 0) : 0;
+
+        if (currentDailyCount >= limits.daily) {
+          throw new HttpError(
+            429,
+            "DAILY_SCAN_LIMIT",
+            `Had scan harian dicapai (${currentDailyCount}/${limits.daily}). Sila cuba lagi esok atau upgrade ke Pro.`
+          );
+        }
+
+        if (currentMonthlyCount >= limits.monthly) {
+          throw new HttpError(
+            429,
+            "MONTHLY_SCAN_LIMIT",
+            `Had scan bulanan dicapai (${currentMonthlyCount}/${limits.monthly}). Sila tunggu bulan depan atau upgrade ke Pro.`
+          );
+        }
+
+        const duplicateQuery = db.collection('parcels')
+          .where('uid', '==', token.uid)
+          .where('trackingNumber', '==', trackingNumber)
+          .limit(1);
+        const duplicateSnap = await tx.get(duplicateQuery);
+        if (!duplicateSnap.empty) {
+          throw new HttpError(
+            409,
+            "DUPLICATE_TRACKING",
+            `Tracking number ${trackingNumber} sudah ada dalam senarai!`
+          );
+        }
+
+        const parcelData = {
+          id: parcelId,
+          recipientName: cleanString(req.body?.recipientName, 100) || 'Tiada Nama',
+          recipientPhone: cleanString(req.body?.recipientPhone, 40),
+          address,
+          trackingNumber,
+          status: 'pending',
+          sequenceNumber,
+          lat,
+          lng,
+          isLocationVerified: req.body?.isLocationVerified === true,
+          addressNotes: cleanString(req.body?.addressNotes, 500),
+          scannedAt: now,
+          isCOD: req.body?.isCOD === true,
+          codAmount,
+          groupTag: optionalCleanString(req.body?.groupTag, 100) || '',
+          uid: token.uid,
+        };
+
+        const profileUpdate: Record<string, number | string> = {
+          dailyScanCount: currentDailyCount + 1,
+          lastScanResetDate: today,
+          monthlyScanCount: currentMonthlyCount + 1,
+          lastScanResetMonth: month,
+        };
+
+        if (!subscriptionActive && trialEligible && hasScanTrial) {
+          profileUpdate.trialScansUsed = finiteNumber(profile.trialScansUsed, 0) + 1;
+        }
+
+        tx.set(db.collection('parcels').doc(parcelId), parcelData);
+        tx.set(profileRef, profileUpdate, { merge: true });
+
+        createdParcel = parcelData;
+        quota = {
+          tier,
+          dailyScanCount: currentDailyCount + 1,
+          dailyLimit: limits.daily,
+          monthlyScanCount: currentMonthlyCount + 1,
+          monthlyLimit: limits.monthly,
+          trialScansUsed: profileUpdate.trialScansUsed ?? profile.trialScansUsed,
+          trialLimit: TRIAL_SCAN_LIMIT,
+        };
+      });
+
+      return res.status(201).json({ parcel: createdParcel, quota });
+    } catch (error: any) {
+      if (error instanceof HttpError) {
+        return res.status(error.status).json({ error: error.message, code: error.code });
+      }
+      console.error("parcel create error:", error instanceof Error ? error.message : 'unknown');
+      return res.status(500).json({
+        error: "Gagal simpan parcel. Sila cuba lagi.",
+        code: "PARCEL_CREATE_FAILED",
+      });
+    }
+  });
 
   // -------------------------------------------------------------------------
   // Gemini OCR proxy - keeps the Gemini API key server-side only
@@ -489,9 +713,22 @@ async function startServer() {
   // Google Maps Geocoding proxy — keeps the API key server-side only
   // -------------------------------------------------------------------------
   app.get("/api/geocode", async (req: Request, res: Response) => {
+    if (!isValidOrigin(req)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    const token = await verifyFirebaseBearer(req);
+    if (!token) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+
     const { address } = req.query;
-    if (!address || typeof address !== 'string' || address.trim().length === 0) {
+    if (!address || typeof address !== 'string' || address.trim().length === 0 || address.length > 1000) {
       return res.status(400).json({ error: "Address required" });
+    }
+
+    if (isRateLimited(`geo_${token.uid}`, 120, 60 * 60 * 1000)) {
+      return res.status(429).json({ error: "Too many geocoding requests. Please wait before trying again." });
     }
 
     const googleMapsKey = process.env.GOOGLE_MAPS_API_KEY;

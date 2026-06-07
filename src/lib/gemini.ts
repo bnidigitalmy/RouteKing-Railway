@@ -119,9 +119,14 @@ export async function getCoordinates(address: string): Promise<GeoResult> {
     if (cacheDoc.exists()) {
       log("Geocache (Firestore):", address);
       const data = cacheDoc.data();
-      const result: GeoResult = { lat: data.lat, lng: data.lng };
-      localGeocache.set(addressHash, result);
-      return result;
+      const lat = Number(data.lat);
+      const lng = Number(data.lng);
+      if (Number.isFinite(lat) && Number.isFinite(lng) && isWithinMalaysia(lat, lng)) {
+        const result: GeoResult = { lat, lng };
+        localGeocache.set(addressHash, result);
+        return result;
+      }
+      warn("Geocache returned invalid coordinates - ignoring:", data);
     }
   } catch (e) {
     warn("Geocache read failed:", e);
@@ -157,11 +162,18 @@ export async function getCoordinates(address: string): Promise<GeoResult> {
   if (!result) {
     try {
       log("OSM failed, trying backend geocode proxy:", address);
+      const idToken = await auth.currentUser?.getIdToken();
+      if (!idToken) {
+        throw new Error("Sila log masuk untuk geocode alamat.");
+      }
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 8000);
 
       const response = await fetch(`/api/geocode?address=${encodeURIComponent(address)}`, {
         signal: controller.signal,
+        headers: {
+          Authorization: `Bearer ${idToken}`,
+        },
       });
       clearTimeout(timeoutId);
 

@@ -32,12 +32,13 @@ service cloud.firestore {
 
       // New: scan-based trial — trialScansUsed present and below limit
       let trialScansUsed = profile.get('trialScansUsed', -1);
-      let scanTrialActive = trialScansUsed >= 0 && trialScansUsed < 50;
+      let trialEligible = profile.get('isPro', false) != true;
+      let scanTrialActive = trialEligible && trialScansUsed >= 0 && trialScansUsed < 50;
 
       // Legacy: time-based 7-day trial (for users created before scan-based trial)
       let trialDuration = 7 * 24 * 60 * 60 * 1000;
       let trialStartedAt = profile.get('trialStartedAt', 0);
-      let legacyTrialActive = trialStartedAt > 0 && (now - trialStartedAt) <= trialDuration;
+      let legacyTrialActive = trialEligible && trialStartedAt > 0 && (now - trialStartedAt) <= trialDuration;
 
       let subActive = profile.get('isPro', false) == true && profile.get('expiryDate', 0) > now;
       return scanTrialActive || legacyTrialActive || subActive || isAdmin();
@@ -46,41 +47,6 @@ service cloud.firestore {
     // ===============================================================
     // Entity Validations
     // ===============================================================
-
-    function isValidParcel(data) {
-      return data.keys().hasAll(['id', 'address', 'trackingNumber', 'status', 'uid']) &&
-             data.keys().hasOnly([
-               'id', 'trackingNumber', 'recipientName', 'recipientPhone',
-               'address', 'status', 'sequenceNumber', 'lat', 'lng',
-               'scannedAt', 'deliveredAt', 'failedAt', 'failedReason',
-               'failedPhotoUrl', 'podPhotoUrl', 'isCOD', 'codAmount',
-               'groupTag', 'folder', 'addressNotes', 'isLocationVerified',
-               'isCustomerPinned', 'uid'
-             ]) &&
-             data.id is string && data.id.size() <= 64 &&
-             data.address is string && data.address.size() <= 1000 &&
-             data.trackingNumber is string && data.trackingNumber.size() <= 100 &&
-             data.status in ['pending', 'delivered', 'failed', 'retry', 'return'] &&
-             data.uid == request.auth.uid &&
-             (!('sequenceNumber' in data) || data.sequenceNumber is number) &&
-             (!('lat' in data) || data.lat is number) &&
-             (!('lng' in data) || data.lng is number) &&
-             (!('scannedAt' in data) || data.scannedAt is number) &&
-             (!('recipientName' in data) || data.recipientName is string) &&
-             (!('recipientPhone' in data) || data.recipientPhone is string) &&
-             (!('deliveredAt' in data) || data.deliveredAt is number || data.deliveredAt == null) &&
-             (!('failedAt' in data) || data.failedAt is number || data.failedAt == null) &&
-             (!('failedReason' in data) || data.failedReason is string || data.failedReason == null) &&
-             (!('failedPhotoUrl' in data) || data.failedPhotoUrl is string || data.failedPhotoUrl == null) &&
-             (!('podPhotoUrl' in data) || data.podPhotoUrl is string || data.podPhotoUrl == null) &&
-             (!('isCOD' in data) || data.isCOD is bool) &&
-             (!('codAmount' in data) || data.codAmount is number) &&
-             (!('groupTag' in data) || data.groupTag is string) &&
-             (!('folder' in data) || data.folder is string || data.folder == null) &&
-             (!('addressNotes' in data) || data.addressNotes is string || data.addressNotes == null) &&
-             (!('isLocationVerified' in data) || data.isLocationVerified is bool) &&
-             (!('isCustomerPinned' in data) || data.isCustomerPinned is bool);
-    }
 
     function isValidFolder(data) {
       return data.keys().hasAll(['name', 'uid']) &&
@@ -158,7 +124,9 @@ service cloud.firestore {
       allow read: if isSignedIn() && existing().uid == request.auth.uid || isAdmin();
       allow list: if isSignedIn() && resource.data.uid == request.auth.uid;
 
-      allow create: if isSignedIn() && isSubscriptionActive() && isValidParcel(incoming()) && isValidId(parcelId);
+      // Parcel creation is handled by /api/parcels/create via the Admin SDK so
+      // scan counters and trial limits update atomically with the new parcel.
+      allow create: if isAdmin();
 
       allow update: if (isSignedIn() && existing().uid == request.auth.uid &&
                         // Immutability: uid can never change
@@ -200,11 +168,7 @@ service cloud.firestore {
     // Geocache (shared, read-heavy resource)
     match /geocache/{addressHash} {
       allow read: if isSignedIn();
-      allow create: if isSignedIn() &&
-                    incoming().keys().hasAll(['address', 'lat', 'lng']) &&
-                    incoming().address is string && incoming().address.size() < 1000 &&
-                    incoming().lat is number && incoming().lng is number;
-      allow update, delete: if isAdmin();
+      allow create, update, delete: if isAdmin();
     }
 
     // Per-user verified addresses

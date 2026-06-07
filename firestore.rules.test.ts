@@ -43,6 +43,15 @@ function parcel(uid: string, id: string, overrides = {}) {
   };
 }
 
+function folder(uid: string, overrides = {}) {
+  return {
+    uid,
+    name: 'Route A',
+    createdAt: Date.now(),
+    ...overrides,
+  };
+}
+
 beforeAll(async () => {
   testEnv = await initializeTestEnvironment({
     projectId: PROJECT_ID,
@@ -72,15 +81,18 @@ describe('RouteKing Firestore rules', () => {
     })));
   });
 
-  test('trial user can create own parcel but not spoof another uid', async () => {
+  test('users cannot create parcels directly because scan creation is server-authoritative', async () => {
     await testEnv.withSecurityRulesDisabled(async (ctx) => {
       await setDoc(doc(ctx.firestore(), 'profiles/user-a'), profile('user-a'));
+      await setDoc(doc(ctx.firestore(), 'profiles/admin-a'), profile('admin-a', { role: 'admin' }));
     });
 
     const db = testEnv.authenticatedContext('user-a').firestore();
+    const adminDb = testEnv.authenticatedContext('admin-a').firestore();
 
-    await assertSucceeds(setDoc(doc(db, 'parcels/parcel-a'), parcel('user-a', 'parcel-a')));
+    await assertFails(setDoc(doc(db, 'parcels/parcel-a'), parcel('user-a', 'parcel-a')));
     await assertFails(setDoc(doc(db, 'parcels/parcel-b'), parcel('user-b', 'parcel-b')));
+    await assertSucceeds(setDoc(doc(adminDb, 'parcels/parcel-admin'), parcel('user-a', 'parcel-admin')));
   });
 
   test('parcel create rejects shadow fields', async () => {
@@ -104,6 +116,19 @@ describe('RouteKing Firestore rules', () => {
 
     const db = testEnv.authenticatedContext('user-a').firestore();
     await assertFails(setDoc(doc(db, 'parcels/parcel-a'), parcel('user-a', 'parcel-a')));
+  });
+
+  test('expired pro user cannot fall back to unused scan trial for gated writes', async () => {
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), 'profiles/user-a'), profile('user-a', {
+        trialScansUsed: 0,
+        isPro: true,
+        expiryDate: Date.now() - 1000,
+      }));
+    });
+
+    const db = testEnv.authenticatedContext('user-a').firestore();
+    await assertFails(setDoc(doc(db, 'folders/folder-a'), folder('user-a')));
   });
 
   test('user cannot list all parcels without owner query', async () => {
@@ -155,17 +180,29 @@ describe('RouteKing Firestore rules', () => {
     await assertFails(getDoc(doc(userDb, 'profiles/admin-a')));
   });
 
-  test('geocache is append-only for users', async () => {
+  test('geocache writes are admin-only', async () => {
     const db = testEnv.authenticatedContext('user-a').firestore();
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), 'profiles/admin-a'), profile('admin-a', { role: 'admin' }));
+    });
+    const adminDb = testEnv.authenticatedContext('admin-a').firestore();
     const ref = doc(db, 'geocache/address_a');
+    const adminRef = doc(adminDb, 'geocache/address_a');
 
-    await assertSucceeds(setDoc(ref, {
+    await assertFails(setDoc(ref, {
+      address: '123 Jalan Ampang',
+      lat: 3.1,
+      lng: 101.7,
+      lastUpdated: Date.now(),
+    }));
+    await assertSucceeds(setDoc(adminRef, {
       address: '123 Jalan Ampang',
       lat: 3.1,
       lng: 101.7,
       lastUpdated: Date.now(),
     }));
     await assertFails(updateDoc(ref, { lat: 4.1 }));
+    await assertSucceeds(updateDoc(adminRef, { lat: 4.1 }));
   });
 
   test('sanity check keeps seeded data visible to admin context', async () => {

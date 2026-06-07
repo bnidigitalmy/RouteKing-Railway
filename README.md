@@ -48,7 +48,7 @@ The app runs through `server.ts`, which mounts Vite middleware in development an
 - `npm run lint` - run TypeScript checks
 - `npm run rules:test` - run Firestore security rules tests with the emulator
 
-`rules:test` requires Java on `PATH` because the Firebase Firestore emulator runs on the JVM.
+`rules:test` requires Java 21+ on `PATH` because the current Firebase Firestore emulator runs on the JVM.
 
 ## Firebase
 

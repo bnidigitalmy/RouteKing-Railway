@@ -20,6 +20,7 @@ import { optimizeRoute } from './lib/optimizer';
 import { getCoordinates } from './lib/gemini';
 import { uploadParcelPhoto } from './lib/parcelPhotos';
 import { createSubscriptionPayment } from './lib/payments';
+import { createScannedParcel } from './lib/parcels';
 import { cn, hapticFeedback } from './lib/utils';
 import confetti from 'canvas-confetti';
 import { motion, AnimatePresence } from 'motion/react';
@@ -55,6 +56,17 @@ const TIER_LIMITS = {
 };
 
 const TRIAL_SCAN_LIMIT = 50;
+
+const isPaidSubscriptionActive = (profile: UserProfile | null) => (
+  !!(profile?.isPro && profile.expiryDate && Date.now() < profile.expiryDate)
+);
+
+const getEffectiveScanTier = (profile: UserProfile | null): keyof typeof TIER_LIMITS => {
+  if (!isPaidSubscriptionActive(profile)) return 'free';
+  return profile?.subscriptionTier && profile.subscriptionTier !== 'free'
+    ? profile.subscriptionTier
+    : 'standard';
+};
 
 const MAIN_DOMAIN = 'routeking.my';
 const HOSTED_APP_DOMAIN_SUFFIXES = ['.run.app', '.up.railway.app'];
@@ -280,10 +292,11 @@ export default function App() {
 
         // New: scan-based trial (trialScansUsed is defined)
         const isOnScanTrial = data.trialScansUsed !== undefined;
-        const scanTrialActive = isOnScanTrial && (data.trialScansUsed! < TRIAL_SCAN_LIMIT);
+        const trialEligible = data.isPro !== true;
+        const scanTrialActive = trialEligible && isOnScanTrial && (data.trialScansUsed! < TRIAL_SCAN_LIMIT);
 
         // Legacy: time-based 7-day trial (users created before scan-based trial)
-        const legacyTrialActive = !isOnScanTrial && data.trialStartedAt
+        const legacyTrialActive = trialEligible && !isOnScanTrial && data.trialStartedAt
           ? (now - data.trialStartedAt <= 7 * 24 * 60 * 60 * 1000)
           : false;
 
@@ -331,19 +344,33 @@ export default function App() {
     data: { recipientName?: string; recipientPhone?: string; address: string; trackingNumber: string; isCOD?: boolean; codAmount?: number; groupTag?: string },
     options?: { keepScannerOpen?: boolean; scanCountOffset?: number }
   ) => {
-    if (!user || !profile) return;
+    if (!user || !profile) {
+      throw new Error("Sila lengkapkan profil rider dahulu.");
+    }
     const scanCountOffset = options?.scanCountOffset || 0;
+    const subscriptionActive = isPaidSubscriptionActive(profile);
+
+    if (!subscriptionActive && profile.isPro === true) {
+      const errorMsg = "Langganan Pro anda telah tamat. Renew RouteKing Pro untuk terus scan.";
+      if (!options?.keepScannerOpen) {
+        setIsScannerOpen(false);
+      }
+      setError(errorMsg);
+      setIsSubscriptionModalOpen(true);
+      throw new Error(errorMsg);
+    }
 
     // Trial scan limit check (scan-based trial users only)
-    if (profile.trialScansUsed !== undefined && !profile.isPro) {
+    if (profile.trialScansUsed !== undefined && !subscriptionActive && profile.isPro !== true) {
       const scansUsed = profile.trialScansUsed + scanCountOffset;
       if (scansUsed >= TRIAL_SCAN_LIMIT) {
         if (!options?.keepScannerOpen) {
           setIsScannerOpen(false);
         }
-        setError(`Had scan percubaan telah habis (${scansUsed}/${TRIAL_SCAN_LIMIT}). Langgan RouteKing Pro untuk terus scan!`);
+        const errorMsg = `Had scan percubaan telah habis (${scansUsed}/${TRIAL_SCAN_LIMIT}). Langgan RouteKing Pro untuk terus scan!`;
+        setError(errorMsg);
         setIsSubscriptionModalOpen(true);
-        return;
+        throw new Error(errorMsg);
       }
     }
 
@@ -358,7 +385,7 @@ export default function App() {
     const currentDailyCount = (isNewDay ? 0 : (profile.dailyScanCount || 0)) + scanCountOffset;
     const currentMonthlyCount = (isNewMonth ? 0 : (profile.monthlyScanCount || 0)) + scanCountOffset;
 
-    const tier = profile.subscriptionTier || 'free';
+    const tier = getEffectiveScanTier(profile);
     const dailyLimit = TIER_LIMITS[tier].daily;
     const monthlyLimit = TIER_LIMITS[tier].monthly;
 
@@ -366,18 +393,20 @@ export default function App() {
       if (!options?.keepScannerOpen) {
         setIsScannerOpen(false);
       }
-      setError(`Had scan harian dicapai (${currentDailyCount}/${dailyLimit}). Sila cuba lagi esok atau upgrade ke Pro.`);
-      if (!profile.isPro) setIsSubscriptionModalOpen(true);
-      return;
+      const errorMsg = `Had scan harian dicapai (${currentDailyCount}/${dailyLimit}). Sila cuba lagi esok atau upgrade ke Pro.`;
+      setError(errorMsg);
+      if (!subscriptionActive) setIsSubscriptionModalOpen(true);
+      throw new Error(errorMsg);
     }
 
     if (currentMonthlyCount >= monthlyLimit) {
       if (!options?.keepScannerOpen) {
         setIsScannerOpen(false);
       }
-      setError(`Had scan bulanan dicapai (${currentMonthlyCount}/${monthlyLimit}). Sila tunggu bulan depan atau upgrade ke Pro.`);
-      if (!profile.isPro) setIsSubscriptionModalOpen(true);
-      return;
+      const errorMsg = `Had scan bulanan dicapai (${currentMonthlyCount}/${monthlyLimit}). Sila tunggu bulan depan atau upgrade ke Pro.`;
+      setError(errorMsg);
+      if (!subscriptionActive) setIsSubscriptionModalOpen(true);
+      throw new Error(errorMsg);
     }
 
     let coordsResult = await getCoordinates(data.address);
@@ -447,20 +476,7 @@ export default function App() {
     };
 
     try {
-      await setDoc(doc(db, 'parcels', parcelId), parcelData, { merge: true });
-      
-      // Update scan counts
-      const scanCountUpdate: Record<string, number | string> = {
-        dailyScanCount: currentDailyCount + 1,
-        lastScanResetDate: today,
-        monthlyScanCount: currentMonthlyCount + 1,
-        lastScanResetMonth: thisMonth,
-      };
-      // Increment trial scan counter (scan-based trial only, can never decrease)
-      if (profile.trialScansUsed !== undefined && !profile.isPro) {
-        scanCountUpdate.trialScansUsed = (profile.trialScansUsed || 0) + scanCountOffset + 1;
-      }
-      await updateDoc(doc(db, 'profiles', user.uid), scanCountUpdate);
+      await createScannedParcel(parcelData);
 
       if (!options?.keepScannerOpen) {
         setIsScannerOpen(false);
@@ -1115,7 +1131,7 @@ export default function App() {
           </div>
 
           {/* Trial scan warning banner */}
-          {profile && !profile.isPro && profile.trialScansUsed !== undefined &&
+          {profile && !isPaidSubscriptionActive(profile) && profile.trialScansUsed !== undefined &&
            profile.trialScansUsed >= 40 && profile.trialScansUsed < TRIAL_SCAN_LIMIT && (
             <button
               onClick={() => setIsSubscriptionModalOpen(true)}
@@ -1564,7 +1580,7 @@ export default function App() {
                 onClose={() => setIsScannerOpen(false)} 
                 quota={profile ? {
                   current: profile.dailyScanCount || 0,
-                  limit: TIER_LIMITS[profile.subscriptionTier || 'free'].daily
+                  limit: TIER_LIMITS[getEffectiveScanTier(profile)].daily
                 } : undefined}
               />
             </Suspense>
@@ -1579,7 +1595,7 @@ export default function App() {
                 onClose={() => setIsMarkingModeOpen(false)} 
                 quota={profile ? {
                   current: profile.dailyScanCount || 0,
-                  limit: TIER_LIMITS[profile.subscriptionTier || 'free'].daily
+                  limit: TIER_LIMITS[getEffectiveScanTier(profile)].daily
                 } : undefined}
               />
             </Suspense>
@@ -2101,8 +2117,10 @@ export default function App() {
                       <div className="p-5 bg-gray-50 rounded-[1.5rem] border border-gray-100 space-y-3">
                         <div className="flex justify-between items-center">
                           <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Status Akaun</span>
-                          {profile.isPro ? (
+                          {isPaidSubscriptionActive(profile) ? (
                             <span className="bg-green-100 text-green-700 text-[10px] font-black px-2 py-1 rounded-full uppercase tracking-tighter">PRO ACTIVE</span>
+                          ) : profile.isPro ? (
+                            <span className="bg-red-100 text-red-700 text-[10px] font-black px-2 py-1 rounded-full uppercase tracking-tighter">PRO EXPIRED</span>
                           ) : (
                             <span className="bg-blue-100 text-blue-700 text-[10px] font-black px-2 py-1 rounded-full uppercase tracking-tighter">FREE TRIAL</span>
                           )}
@@ -2113,7 +2131,7 @@ export default function App() {
                             <span className="text-xs font-bold text-gray-700">{new Date(profile.expiryDate).toLocaleDateString('ms-MY')}</span>
                           </div>
                         )}
-                        {!profile.isPro && profile.trialScansUsed !== undefined && (
+                        {!isPaidSubscriptionActive(profile) && profile.trialScansUsed !== undefined && (
                           <div className="space-y-1">
                             <div className="flex justify-between items-center">
                               <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Trial Scan</span>
@@ -2142,23 +2160,23 @@ export default function App() {
                             <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Kuota Scan (Harian)</span>
                             <span className={cn(
                               "text-xs font-black",
-                              (profile.dailyScanCount || 0) >= TIER_LIMITS[profile.subscriptionTier || 'free'].daily ? "text-red-600" : "text-blue-600"
+                              (profile.dailyScanCount || 0) >= TIER_LIMITS[getEffectiveScanTier(profile)].daily ? "text-red-600" : "text-blue-600"
                             )}>
-                              {profile.dailyScanCount || 0} / {TIER_LIMITS[profile.subscriptionTier || 'free'].daily}
+                              {profile.dailyScanCount || 0} / {TIER_LIMITS[getEffectiveScanTier(profile)].daily}
                             </span>
                           </div>
                           <div className="flex justify-between items-center">
                             <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Kuota Scan (Bulanan)</span>
                             <span className={cn(
                               "text-xs font-black",
-                              (profile.monthlyScanCount || 0) >= TIER_LIMITS[profile.subscriptionTier || 'free'].monthly ? "text-red-600" : "text-blue-600"
+                              (profile.monthlyScanCount || 0) >= TIER_LIMITS[getEffectiveScanTier(profile)].monthly ? "text-red-600" : "text-blue-600"
                             )}>
-                              {profile.monthlyScanCount || 0} / {TIER_LIMITS[profile.subscriptionTier || 'free'].monthly}
+                              {profile.monthlyScanCount || 0} / {TIER_LIMITS[getEffectiveScanTier(profile)].monthly}
                             </span>
                           </div>
                         </div>
                         
-                        {!profile.isPro && (
+                        {!isPaidSubscriptionActive(profile) && (
                           <button 
                             onClick={() => {
                               setIsProfileModalOpen(false);
