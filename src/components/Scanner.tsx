@@ -96,6 +96,26 @@ const sanitizeValue = (val: any) => {
   return String(val).trim();
 };
 
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const buildAddressWithOcrRegion = (result: any) => {
+  const address = sanitizeValue(result?.address);
+  const postalCode = sanitizeValue(result?.postalCode ?? result?.postcode ?? result?.postCode);
+  const state = sanitizeValue(result?.state);
+  const parts = [address];
+  const lowerAddress = address.toLowerCase();
+
+  if (postalCode && !new RegExp(`\\b${escapeRegExp(postalCode)}\\b`).test(address)) {
+    parts.push(postalCode);
+  }
+
+  if (state && !lowerAddress.includes(state.toLowerCase())) {
+    parts.push(state);
+  }
+
+  return parts.filter(Boolean).join(', ');
+};
+
 const formatScanError = (err: any) => {
   const message = err?.message || "Gagal membaca label.";
   const lower = String(message).toLowerCase();
@@ -280,7 +300,7 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan', quota }: S
         const dataToSubmit = {
           recipientName: sanitize(result.recipientName) || 'Tiada Nama',
           recipientPhone: sanitize(result.recipientPhone),
-          address: sanitize(result.address),
+          address: buildAddressWithOcrRegion(result),
           trackingNumber: sanitize(result.trackingNumber),
           isCOD: !!result.isCOD,
           codAmount: result.codAmount ? parseFloat(String(result.codAmount)) : undefined,
@@ -317,10 +337,11 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan', quota }: S
         }
       } else {
         // Normal mode: Show the form for confirmation
-        setScannedData(result);
+        const normalizedAddress = buildAddressWithOcrRegion(result);
+        setScannedData({ ...result, address: normalizedAddress });
         setEditName(sanitize(result.recipientName) || 'Tiada Nama');
         setEditPhone(sanitize(result.recipientPhone));
-        setEditAddress(sanitize(result.address));
+        setEditAddress(normalizedAddress);
         setEditTracking(sanitize(result.trackingNumber));
         setEditGroup('');
         setIsCOD(!!result.isCOD);
@@ -402,7 +423,7 @@ export function Scanner({ onScan, onMarkScan, onClose, mode = 'scan', quota }: S
         const dataToSubmit = {
           recipientName: sanitizeValue(result.recipientName) || 'Tiada Nama',
           recipientPhone: sanitizeValue(result.recipientPhone),
-          address: sanitizeValue(result.address),
+          address: buildAddressWithOcrRegion(result),
           trackingNumber: sanitizeValue(result.trackingNumber),
           isCOD: !!result.isCOD,
           codAmount: result.codAmount ? parseFloat(String(result.codAmount)) : undefined,

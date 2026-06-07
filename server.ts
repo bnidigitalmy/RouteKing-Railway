@@ -706,7 +706,7 @@ async function startServer() {
         contents: {
           parts: [
             {
-              text: "Extract from Malaysian AWB: recipientName, recipientPhone, address, trackingNumber, isCOD (bool), codAmount (number). Return JSON only.",
+              text: "Extract from Malaysian AWB: recipientName, recipientPhone, address, postalCode, state, trackingNumber, isCOD (bool), codAmount (number). Keep the 5-digit Malaysian postcode if visible. Return JSON only.",
             },
             { inlineData: { data: base64Data, mimeType } },
           ],
@@ -719,6 +719,8 @@ async function startServer() {
               recipientName: { type: Type.STRING, description: "Recipient's full name" },
               recipientPhone: { type: Type.STRING, description: "Recipient's phone number" },
               address: { type: Type.STRING, description: "Full recipient delivery address" },
+              postalCode: { type: Type.STRING, description: "5-digit Malaysian postcode if visible" },
+              state: { type: Type.STRING, description: "Malaysian state if visible or inferable from postcode" },
               trackingNumber: { type: Type.STRING, description: "Courier tracking number" },
               isCOD: { type: Type.BOOLEAN, description: "True if COD is mentioned" },
               codAmount: { type: Type.NUMBER, description: "The RM amount for COD if applicable" },
