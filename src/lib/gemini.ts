@@ -1,5 +1,15 @@
 import { auth, db, doc, getDoc, setDoc } from "../firebase";
 import { withRetry } from "./utils";
+import {
+  addressRegionMatchesMetadata,
+  buildAddressWithRegionHint,
+  describeRegionHint,
+  fallbackCoordinateForAddress,
+  inferAddressRegion,
+  isCoordinateCompatibleWithAddress,
+  regionMetadataForAddress,
+  stateFromText,
+} from "./malaysiaGeo";
 
 const isDev = import.meta.env.DEV;
 const GEMINI_QUOTA_ERROR_CODE = 'GEMINI_QUOTA_OR_RATE_LIMIT';
@@ -21,13 +31,6 @@ function warn(...args: unknown[]) {
 
 function hashAddress(address: string): string {
   return address.toLowerCase().replace(/[^a-z0-9]/g, '_').substring(0, 100);
-}
-
-const MY_BOUNDS = { latMin: 0.8, latMax: 7.5, lngMin: 99.5, lngMax: 119.5 };
-
-function isWithinMalaysia(lat: number, lng: number): boolean {
-  return lat >= MY_BOUNDS.latMin && lat <= MY_BOUNDS.latMax &&
-         lng >= MY_BOUNDS.lngMin && lng <= MY_BOUNDS.lngMax;
 }
 
 function createApiError(message: string, status?: number, code?: string): ApiError {
@@ -108,10 +111,17 @@ const localGeocache = new Map<string, GeoResult>();
 
 export async function getCoordinates(address: string): Promise<GeoResult> {
   const addressHash = hashAddress(address);
+  const regionHint = inferAddressRegion(address);
+  const expectedRegion = describeRegionHint(regionHint);
 
   if (localGeocache.has(addressHash)) {
-    log("Geocache (memory):", address);
-    return localGeocache.get(addressHash)!;
+    const cached = localGeocache.get(addressHash)!;
+    if (isCoordinateCompatibleWithAddress(address, cached.lat, cached.lng)) {
+      log("Geocache (memory):", address);
+      return cached;
+    }
+    warn(`Geocache (memory) ignored: coordinate does not match ${expectedRegion}`, { address, cached });
+    localGeocache.delete(addressHash);
   }
 
   try {
@@ -121,12 +131,15 @@ export async function getCoordinates(address: string): Promise<GeoResult> {
       const data = cacheDoc.data();
       const lat = Number(data.lat);
       const lng = Number(data.lng);
-      if (Number.isFinite(lat) && Number.isFinite(lng) && isWithinMalaysia(lat, lng)) {
+      if (
+        isCoordinateCompatibleWithAddress(address, lat, lng) &&
+        addressRegionMatchesMetadata(address, data)
+      ) {
         const result: GeoResult = { lat, lng };
         localGeocache.set(addressHash, result);
         return result;
       }
-      warn("Geocache returned invalid coordinates - ignoring:", data);
+      warn(`Geocache ignored: coordinate does not match ${expectedRegion}`, data);
     }
   } catch (e) {
     warn("Geocache read failed:", e);
@@ -135,68 +148,92 @@ export async function getCoordinates(address: string): Promise<GeoResult> {
   let result: GeoResult | null = null;
 
   try {
-    const cleanAddress = address.replace(/No\./gi, '').replace(/Jalan/gi, 'Jln').trim();
-    const query = encodeURIComponent(cleanAddress);
+    log("Trying backend geocode proxy:", address);
+    const idToken = await auth.currentUser?.getIdToken();
+    if (!idToken) {
+      throw new Error("Sila log masuk untuk geocode alamat.");
+    }
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
 
-    result = await withRetry(async () => {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
+    const response = await fetch(`/api/geocode?address=${encodeURIComponent(address)}`, {
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${idToken}`,
+      },
+    });
+    clearTimeout(timeoutId);
 
-      const response = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&q=${query}&countrycodes=my&limit=1`,
-        { signal: controller.signal, headers: { 'Accept-Language': 'ms,en-US;q=0.7,en;q=0.3' } }
-      );
-      clearTimeout(timeoutId);
-
+    if (response.ok) {
       const data = await response.json();
-      if (data?.length > 0) {
-        log("OSM geocode success:", address);
-        return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
+      const lat = Number(data.lat);
+      const lng = Number(data.lng);
+      if (isCoordinateCompatibleWithAddress(address, lat, lng)) {
+        result = { lat, lng };
+        log("Backend geocode proxy success:", address);
+      } else {
+        warn(`Backend geocode ignored: coordinate does not match ${expectedRegion}`, data);
       }
-      return null;
-    }, { maxRetries: 2, initialDelay: 1500 });
+    } else {
+      const data = await response.json().catch(() => null);
+      warn("Backend geocoding proxy did not return a usable result:", data || response.status);
+    }
   } catch (error) {
-    warn("OSM geocoding error:", error);
+    warn("Backend geocoding proxy failed:", error);
   }
 
   if (!result) {
     try {
-      log("OSM failed, trying backend geocode proxy:", address);
-      const idToken = await auth.currentUser?.getIdToken();
-      if (!idToken) {
-        throw new Error("Sila log masuk untuk geocode alamat.");
-      }
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 8000);
+      result = await withRetry(async () => {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
+        const cleanAddress = buildAddressWithRegionHint(
+          address.replace(/No\./gi, '').replace(/Jalan/gi, 'Jln').trim()
+        );
+        const query = encodeURIComponent(cleanAddress);
 
-      const response = await fetch(`/api/geocode?address=${encodeURIComponent(address)}`, {
-        signal: controller.signal,
-        headers: {
-          Authorization: `Bearer ${idToken}`,
-        },
-      });
-      clearTimeout(timeoutId);
+        const response = await fetch(
+          `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&q=${query}&countrycodes=my&limit=5`,
+          { signal: controller.signal, headers: { 'Accept-Language': 'ms,en-US;q=0.7,en;q=0.3' } }
+        );
+        clearTimeout(timeoutId);
 
-      if (response.ok) {
         const data = await response.json();
-        if (data.lat && data.lng) {
-          result = { lat: data.lat, lng: data.lng };
-          log("Backend geocode proxy success:", address);
+        if (Array.isArray(data) && data.length > 0) {
+          const match = data
+            .map((item: any) => ({
+              lat: Number(item.lat),
+              lng: Number(item.lon),
+              postcode: item?.address?.postcode,
+              state: stateFromText(String(item?.address?.state || item?.address?.county || '')),
+            }))
+            .find((item: any) => (
+              isCoordinateCompatibleWithAddress(address, item.lat, item.lng) &&
+              addressRegionMatchesMetadata(address, item)
+            ));
+
+          if (match) {
+            log("OSM geocode success:", address);
+            return { lat: match.lat, lng: match.lng };
+          }
+
+          warn(`OSM geocode ignored: no candidate matched ${expectedRegion}`, data.slice(0, 3));
         }
-      }
+        return null;
+      }, { maxRetries: 2, initialDelay: 1500 });
     } catch (error) {
-      warn("Backend geocoding proxy failed:", error);
+      warn("OSM geocoding error:", error);
     }
   }
 
-  if (result && !isWithinMalaysia(result.lat, result.lng)) {
-    warn("Geocoding returned coordinates outside Malaysia bounds - discarding:", result);
+  if (result && !isCoordinateCompatibleWithAddress(address, result.lat, result.lng)) {
+    warn(`Geocoding returned coordinates outside expected region ${expectedRegion} - discarding:`, result);
     result = null;
   }
 
   if (!result) {
-    warn("All geocoding attempts failed for:", address);
-    result = { lat: 3.1390, lng: 101.6869, isApproximate: true };
+    warn(`All geocoding attempts failed for ${expectedRegion}:`, address);
+    result = fallbackCoordinateForAddress(address);
   }
 
   localGeocache.set(addressHash, result);
@@ -207,6 +244,7 @@ export async function getCoordinates(address: string): Promise<GeoResult> {
       lng: result.lng,
       isApproximate: result.isApproximate || false,
       lastUpdated: Date.now(),
+      ...regionMetadataForAddress(address),
     });
   } catch (e) {
     warn("Geocache write failed:", e);

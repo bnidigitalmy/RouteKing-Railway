@@ -11,6 +11,14 @@ import { getFirestore } from "firebase-admin/firestore";
 import fs from "fs";
 import crypto from "crypto";
 import { GoogleGenAI, Type } from "@google/genai";
+import {
+  buildAddressWithRegionHint,
+  describeRegionHint,
+  inferAddressRegion,
+  isCoordinateCompatibleWithAddress,
+  regionMetadataForAddress,
+  stateFromText,
+} from "./src/lib/malaysiaGeo";
 
 // Load Firebase Config
 const firebaseConfigPath = path.join(process.cwd(), 'firebase-applet-config.json');
@@ -322,6 +330,40 @@ function verifiedAddressHash(address: string): string {
   return address.toLowerCase().replace(/[^a-z0-9]/g, '').substring(0, 200);
 }
 
+function getGoogleAddressComponent(result: any, type: string): string[] {
+  const components = Array.isArray(result?.address_components) ? result.address_components : [];
+  return components
+    .filter((component: any) => Array.isArray(component.types) && component.types.includes(type))
+    .flatMap((component: any) => [component.long_name, component.short_name])
+    .filter((value: unknown): value is string => typeof value === 'string' && value.trim().length > 0);
+}
+
+function googleGeocodeResultMatchesAddress(address: string, result: any): boolean {
+  const loc = result?.geometry?.location;
+  const lat = Number(loc?.lat);
+  const lng = Number(loc?.lng);
+  if (!isCoordinateCompatibleWithAddress(address, lat, lng)) {
+    return false;
+  }
+
+  const hint = inferAddressRegion(address);
+  if (hint.postcode) {
+    const postalCodes = getGoogleAddressComponent(result, 'postal_code');
+    if (postalCodes.length > 0 && !postalCodes.includes(hint.postcode)) {
+      return false;
+    }
+  }
+
+  if (hint.state) {
+    const states = getGoogleAddressComponent(result, 'administrative_area_level_1');
+    if (states.length > 0 && !states.some(value => stateFromText(value) === hint.state)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 function base64url(buf: Buffer): string {
   return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
@@ -489,6 +531,14 @@ async function startServer() {
       return res.status(400).json({
         error: "Koordinat parcel tidak sah.",
         code: "INVALID_COORDINATES",
+      });
+    }
+
+    if (!isCoordinateCompatibleWithAddress(address, lat, lng)) {
+      const expectedRegion = describeRegionHint(inferAddressRegion(address));
+      return res.status(422).json({
+        error: `Koordinat parcel tidak sepadan dengan alamat (${expectedRegion}). Sila semak pin lokasi.`,
+        code: "COORDINATE_REGION_MISMATCH",
       });
     }
 
@@ -737,16 +787,34 @@ async function startServer() {
     }
 
     try {
+      const addressText = address.trim();
+      const hint = inferAddressRegion(addressText);
+      const componentFilters = ['country:MY'];
+      if (hint.postcode) componentFilters.push(`postal_code:${hint.postcode}`);
+      if (hint.state) componentFilters.push(`administrative_area:${hint.state}`);
+
       const response = await axios.get<any>(
         'https://maps.googleapis.com/maps/api/geocode/json',
         {
-          params: { address: address.trim(), components: 'country:MY', key: googleMapsKey },
+          params: {
+            address: buildAddressWithRegionHint(addressText),
+            components: componentFilters.join('|'),
+            key: googleMapsKey,
+          },
           timeout: 8000,
         }
       );
       const data = response.data;
       if (data.status === 'OK' && data.results?.length > 0) {
-        const loc = data.results[0].geometry.location;
+        const result = data.results.find((item: any) => googleGeocodeResultMatchesAddress(addressText, item));
+        if (!result) {
+          return res.status(422).json({
+            error: `Geocoding result does not match ${describeRegionHint(hint)}`,
+            code: "GEOCODE_REGION_MISMATCH",
+          });
+        }
+
+        const loc = result.geometry.location;
         return res.json({ lat: loc.lat, lng: loc.lng });
       }
       return res.status(404).json({ error: "Address not found", status: data.status });
@@ -1004,9 +1072,10 @@ async function startServer() {
       const uid = typeof d.uid === 'string' ? d.uid : '';
       if (address) {
         const now = Date.now();
+        const regionMetadata = regionMetadataForAddress(address);
         try {
           await db.collection('geocache').doc(geocacheHash(address)).set(
-            { address, lat, lng, isApproximate: false, lastUpdated: now },
+            { address, lat, lng, isApproximate: false, lastUpdated: now, ...regionMetadata },
             { merge: true }
           );
         } catch (e) {
@@ -1016,7 +1085,7 @@ async function startServer() {
           try {
             await db.collection('users').doc(uid)
               .collection('verified_addresses').doc(verifiedAddressHash(address))
-              .set({ address, lat, lng, lastUpdated: now }, { merge: true });
+              .set({ address, lat, lng, lastUpdated: now, ...regionMetadata }, { merge: true });
           } catch (e) {
             console.error("verified_addresses write failed:", e instanceof Error ? e.message : 'unknown');
           }

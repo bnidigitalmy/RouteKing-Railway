@@ -18,6 +18,13 @@ import { HoldButton } from './components/ui/HoldButton';
 import { ParcelSkeleton } from './components/ui/Skeleton';
 import { optimizeRoute } from './lib/optimizer';
 import { getCoordinates } from './lib/gemini';
+import {
+  addressRegionMatchesMetadata,
+  describeRegionHint,
+  inferAddressRegion,
+  isCoordinateCompatibleWithAddress,
+  regionMetadataForAddress,
+} from './lib/malaysiaGeo';
 import { uploadParcelPhoto } from './lib/parcelPhotos';
 import { createSubscriptionPayment } from './lib/payments';
 import { createScannedParcel } from './lib/parcels';
@@ -424,9 +431,21 @@ export default function App() {
       const verifiedSnap = await getDoc(verifiedRef);
       if (verifiedSnap.exists()) {
         const vData = verifiedSnap.data();
-        coords = { lat: vData.lat, lng: vData.lng };
-        verifiedNotes = vData.addressNotes || '';
-        isVerified = true;
+        const verifiedLat = Number(vData.lat);
+        const verifiedLng = Number(vData.lng);
+        if (
+          isCoordinateCompatibleWithAddress(data.address, verifiedLat, verifiedLng) &&
+          addressRegionMatchesMetadata(data.address, vData)
+        ) {
+          coords = { lat: verifiedLat, lng: verifiedLng };
+          verifiedNotes = vData.addressNotes || '';
+          isVerified = true;
+        } else {
+          console.warn(
+            `Ignoring verified address memory outside ${describeRegionHint(inferAddressRegion(data.address))}:`,
+            { address: data.address, lat: verifiedLat, lng: verifiedLng }
+          );
+        }
       }
     } catch (e) {
       console.error("Error checking verified address:", e);
@@ -1629,7 +1648,8 @@ export default function App() {
                         lng: data.lng || parcel.lng || 0,
                         addressNotes: data.addressNotes !== undefined ? data.addressNotes : (currentVData.addressNotes || ''),
                         uid: user.uid,
-                        updatedAt: Date.now()
+                        updatedAt: Date.now(),
+                        ...regionMetadataForAddress(parcel.address),
                       }, { merge: true });
                     }
                   }
